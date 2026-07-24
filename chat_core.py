@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ ENV_PATH = PROJECT_ROOT / ".env"
 
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_DETAIL_LEVEL = "normal"
+MAX_DOCUMENT_CONTEXT_CHARS = 28_000
 
 DETAIL_LEVEL_INSTRUCTIONS = {
     "breve": """
@@ -989,6 +991,7 @@ def leer_documento(
     document_id: str,
     catalog: dict[str, dict[str, Any]],
     trace: AccessTrace,
+    query: str | None = None,
 ) -> str:
     """Lee el Markdown asociado a un identificador permitido."""
     metadata = catalog.get(document_id)
@@ -1010,6 +1013,7 @@ def leer_documento(
         )
 
     trace.add(FileAccess(document_id, relative_file, True))
+    content = seleccionar_contexto_documental(content, query)
     return json.dumps(
         {
             "ok": True,
@@ -1026,6 +1030,7 @@ def ejecutar_tool(
     arguments: dict[str, Any],
     catalog: dict[str, dict[str, Any]],
     trace: AccessTrace,
+    query: str | None = None,
 ) -> str:
     """Enruta una llamada del modelo hacia una función local permitida."""
     if tool_name != "leer_documento":
@@ -1040,4 +1045,39 @@ def ejecutar_tool(
             {"ok": False, "error": "Falta un identificador de documento válido."},
             ensure_ascii=False,
         )
-    return leer_documento(document_id, catalog, trace)
+    return leer_documento(document_id, catalog, trace, query=query)
+
+
+def seleccionar_contexto_documental(content: str, query: str | None) -> str:
+    """Devuelve documentos pequeños completos y secciones relevantes de los extensos."""
+    if len(content) <= MAX_DOCUMENT_CONTEXT_CHARS:
+        return content
+
+    sections = re.split(r"(?=^#{1,3}\s+)", content, flags=re.MULTILINE)
+    query_terms = set(re.findall(r"[\wáéíóúüñ]{4,}", (query or "").lower()))
+    notice = "\n\n[El documento se ha acotado a sus secciones más relevantes.]"
+    context_budget = MAX_DOCUMENT_CONTEXT_CHARS - len(notice)
+
+    def score(section: str) -> int:
+        lowered = section.lower()
+        heading = lowered.split("\n", 1)[0]
+        return sum(lowered.count(term) + 3 * heading.count(term) for term in query_terms)
+
+    if query_terms:
+        ranked = sorted(enumerate(sections), key=lambda item: (score(item[1]), -item[0]), reverse=True)
+    else:
+        ranked = list(enumerate(sections))
+    selected: list[tuple[int, str]] = []
+    total = 0
+    for index, section in ranked:
+        if not section.strip():
+            continue
+        remaining = context_budget - total
+        if remaining <= 0:
+            break
+        excerpt = section[:remaining]
+        selected.append((index, excerpt))
+        total += len(excerpt)
+
+    selected.sort(key=lambda item: item[0])
+    return "\n\n".join(section for _, section in selected) + notice

@@ -50,6 +50,17 @@ class ChatCoreTests(unittest.TestCase):
         self.assertIn("Grado en Inteligencia Artificial", result["content"])
         self.assertEqual(trace.accesses[0].document_id, "education")
 
+    def test_acota_documento_extenso_y_prioriza_la_consulta(self):
+        unrelated = "# Introducción\n" + ("contenido general " * 2_000)
+        relevant = "# Proyecto de visión artificial\n" + ("visión artificial clasificación imágenes " * 2_000)
+        content = f"{unrelated}\n{relevant}"
+
+        selected = chat_core.seleccionar_contexto_documental(content, "¿Qué proyecto de visión artificial has desarrollado?")
+
+        self.assertLessEqual(len(selected), chat_core.MAX_DOCUMENT_CONTEXT_CHARS)
+        self.assertIn("Proyecto de visión artificial", selected)
+        self.assertTrue(selected.endswith("[El documento se ha acotado a sus secciones más relevantes.]"))
+
 
 if __name__ == "__main__":
     unittest.main()

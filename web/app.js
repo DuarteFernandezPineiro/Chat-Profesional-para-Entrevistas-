@@ -22,8 +22,8 @@ let isRequestPending = false;
 let activeController = null;
 let stopRequested = false;
 let conversationHistory = [];
-let completedQuestionCount = 0;
 let conversationGeneration = 0;
+let sessionResetPending = true;
 
 function selectedDetailLevel() {
   return document.querySelector("input[name='detail']:checked").value;
@@ -374,7 +374,7 @@ function resetConversation() {
   activeController = null;
   stopRequested = false;
   conversationHistory = [];
-  completedQuestionCount = 0;
+  sessionResetPending = true;
   conversation.classList.remove("has-conversation");
   chatPanel.classList.remove("chat-active");
   chatPanel.classList.add("chat-empty");
@@ -435,9 +435,6 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  const questionNumber = conversationHistory.length
-    ? completedQuestionCount + 1
-    : 1;
   const requestGeneration = conversationGeneration;
 
   clearWelcome();
@@ -498,10 +495,10 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         message: question,
         detailLevel: selectedDetailLevel(),
-        history: conversationHistory,
-        questionNumber,
+        resetConversation: sessionResetPending,
       }),
       signal: controller.signal,
+      credentials: "same-origin",
     });
 
     if (!response.ok) {
@@ -555,7 +552,7 @@ form.addEventListener("submit", async (event) => {
       { role: "assistant", content: answer },
     );
     conversationHistory = conversationHistory.slice(-8);
-    completedQuestionCount = questionNumber;
+    sessionResetPending = false;
     statusRegion.textContent = "Respuesta completada.";
     scrollToLatest();
   } catch (error) {

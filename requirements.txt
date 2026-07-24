@@ -1,3 +1,5 @@
-openai>=2.0.0
-python-dotenv>=1.0.0
-PyYAML>=6.0.0
+fastapi==0.139.2
+openai==2.45.0
+python-dotenv==1.2.2
+PyYAML==6.0.3
+uvicorn[standard]==0.51.0
