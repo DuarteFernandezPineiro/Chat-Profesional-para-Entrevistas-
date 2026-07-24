@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#edf2ef" />
+    <title>Conoce a Duarte Fernández Piñeiro</title>
+    <meta
+      name="description"
+      content="Conversa con el asistente profesional de Duarte Fernández Piñeiro sobre su formación, experiencia, proyectos y objetivos."
+    />
+    <link rel="stylesheet" href="/styles.css?v=10" />
+  </head>
+  <body>
+    <a class="skip-link" href="#message-input">Ir a la conversación</a>
+
+    <main class="shell">
+      <aside class="profile-panel" aria-labelledby="page-title">
+        <div class="profile-content">
+          <div class="identity-lockup">
+            <span class="profile-mark" aria-hidden="true">DF</span>
+            <div class="identity-copy">
+              <span class="eyebrow">Candidatura profesional</span>
+              <h1 id="page-title">Duarte Fernández Piñeiro</h1>
+              <p class="profile-focus">Graduado en Inteligencia Artificial</p>
+            </div>
+          </div>
+
+          <p class="profile-summary">
+            Curiosidad técnica, aprendizaje continuo y compromiso para convertir
+            retos complejos en soluciones útiles.
+          </p>
+
+        </div>
+
+        <nav class="contact-links" aria-label="Contacto de Duarte">
+          <button
+            id="cv-placeholder"
+            class="contact-item cv-placeholder"
+            type="button"
+            title="Añade el PDF del CV para activar este botón"
+            disabled
+          >
+            <span class="contact-link-label">
+              <span class="contact-icon document-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20">
+                  <path d="M5 2.5h6l4 4v11H5zM11 2.5v4h4M8 11h4M8 14h4" />
+                </svg>
+              </span>
+              <span>Abrir CV</span>
+            </span>
+            <svg class="contact-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M6 14 14 6M8 6h6v6"></path>
+            </svg>
+          </button>
+          <a
+            class="contact-item"
+            href="https://www.linkedin.com/in/dfernandezpineiro"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span class="contact-link-label">
+              <span class="contact-icon linkedin-icon" aria-hidden="true">in</span>
+              <span>LinkedIn</span>
+            </span>
+            <svg class="contact-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M6 14 14 6M8 6h6v6"></path>
+            </svg>
+          </a>
+          <a class="contact-item" href="mailto:dfernandezpineiro@gmail.com">
+            <span class="contact-link-label">
+              <span class="contact-icon gmail-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20">
+                  <path d="M2.5 4.5h15v11h-15zM3 5l7 5.5L17 5" />
+                </svg>
+              </span>
+              <span>Correo electrónico</span>
+            </span>
+            <svg class="contact-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M6 14 14 6M8 6h6v6"></path>
+            </svg>
+          </a>
+        </nav>
+
+        <template id="cv-link-template">
+          <a
+            class="contact-item cv-link"
+            href=""
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Abrir y descargar el CV de Duarte"
+          >
+            <span class="contact-link-label">
+              <span class="contact-icon document-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20">
+                  <path d="M5 2.5h6l4 4v11H5zM11 2.5v4h4M8 11h4M8 14h4" />
+                </svg>
+              </span>
+              <span>Abrir CV</span>
+            </span>
+            <svg class="contact-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M6 14 14 6M8 6h6v6"></path>
+            </svg>
+          </a>
+        </template>
+      </aside>
+
+      <section class="chat-panel chat-empty" aria-labelledby="chat-title">
+        <header class="chat-header">
+          <div class="chat-heading">
+            <h2 id="chat-title">Asistente profesional de Duarte</h2>
+            <p>Conoce su perfil académico y profesional.</p>
+          </div>
+
+          <div class="header-controls">
+            <div class="detail-control">
+              <span class="detail-label">Nivel de respuesta</span>
+              <fieldset class="detail-selector">
+                <legend>Nivel de respuesta</legend>
+                <label>
+                  <input type="radio" name="detail" value="breve" />
+                  <span>Breve</span>
+                </label>
+                <label>
+                  <input type="radio" name="detail" value="normal" checked />
+                  <span>Normal</span>
+                </label>
+                <label>
+                  <input type="radio" name="detail" value="detallado" />
+                  <span>Detallado</span>
+                </label>
+              </fieldset>
+            </div>
+            <button
+              id="theme-toggle"
+              class="icon-button theme-toggle"
+              type="button"
+              aria-label="Activar modo oscuro"
+              title="Activar modo oscuro"
+            >
+              <svg class="theme-icon sun" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.5"></circle>
+                <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+              </svg>
+              <svg class="theme-icon moon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 15.1A8 8 0 0 1 8.9 4a8 8 0 1 0 11.1 11.1Z"></path>
+              </svg>
+            </button>
+            <button id="new-chat" class="new-chat-button" type="button" hidden>
+              Nueva conversación
+            </button>
+          </div>
+        </header>
+
+        <div class="chat-body">
+          <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions">
+            <div class="conversation-inner">
+              <section class="welcome" data-welcome aria-labelledby="welcome-title">
+                <p class="message-author">Asistente profesional de Duarte</p>
+                <h3 id="welcome-title">¿Qué te gustaría saber acerca de Duarte?</h3>
+                <p class="welcome-copy">
+                  Puedo responder sobre formación, experiencia, habilidades, proyectos
+                  y encaje con una oportunidad profesional.
+                </p>
+                <div class="suggested-questions" aria-label="Preguntas sugeridas">
+                  <button type="button" data-question="¿Qué experiencia práctica tiene Duarte?">
+                    ¿Qué experiencia práctica tiene Duarte?
+                  </button>
+                  <button type="button" data-question="¿Cuáles son sus proyectos más relevantes?">
+                    ¿Cuáles son sus proyectos más relevantes?
+                  </button>
+                  <button type="button" data-question="¿Qué habilidades técnicas domina?">
+                    ¿Qué habilidades técnicas domina?
+                  </button>
+                  <button type="button" data-question="¿Cómo trabaja y encaja en un equipo?">
+                    ¿Cómo trabaja y encaja en un equipo?
+                  </button>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <form id="chat-form" class="composer">
+            <div class="composer-inner">
+              <div class="composer-field">
+                <label class="sr-only" for="message-input">Escribe una pregunta para Duarte</label>
+                <textarea
+                  id="message-input"
+                  name="message"
+                  rows="1"
+                  maxlength="2000"
+                  placeholder="Pregunta sobre la experiencia o el perfil de Duarte"
+                ></textarea>
+                <div class="composer-actions">
+                  <button class="send-button" type="submit">
+                    <span class="sr-only">Enviar</span>
+                    <svg class="send-icon" viewBox="0 0 20 20" aria-hidden="true">
+                      <path d="M10 15V5M6 9l4-4 4 4"></path>
+                    </svg>
+                    <svg class="stop-icon" viewBox="0 0 20 20" aria-hidden="true">
+                      <rect x="5" y="5" width="10" height="10" rx="1"></rect>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <p id="chat-status" class="sr-only" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="/app.js?v=10" defer></script>
+  </body>
+</html>

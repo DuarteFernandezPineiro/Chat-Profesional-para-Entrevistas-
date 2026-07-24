@@ -1,0 +1,2 @@
+# Keep document assets out of text diffs and line-ending conversions.
+*.pdf binary

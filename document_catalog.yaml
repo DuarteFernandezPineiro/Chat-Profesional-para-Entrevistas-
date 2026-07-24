@@ -1,0 +1,167 @@
+Informacion_documents:
+  about_me:
+    file: Informacion/Sobre_mi.md
+    description: >
+      Presentación personal de Duarte Fernández Piñeiro, valores,
+      intereses, características personales y forma de trabajar.
+    use_when:
+      - presentación personal
+      - fortalezas personales
+      - valores
+      - trabajo en equipo
+      - disciplina
+      - atletismo
+      - aprendizaje continuo
+    do_not_use_for:
+      - detalles técnicos de proyectos
+      - titulaciones concretas
+      - nivel exacto de idiomas
+
+  education:
+    file: Informacion/Estudios_y_certificaciones.md
+    description: >
+      Formación académica, instituciones, periodos, titulaciones
+      finalizadas, estudios cursados y certificaciones de Duarte.
+    use_when:
+      - estudios
+      - universidad
+      - grado
+      - bachillerato
+      - certificaciones
+      - formación musical
+    do_not_use_for:
+      - experiencia laboral
+      - competencias técnicas demostradas en proyectos
+
+  work_experience:
+    file: Informacion/Experiencia_laboral.md
+    description: >
+      Experiencia laboral y prácticas de Duarte, responsabilidades,
+      proyectos empresariales, tareas realizadas, participación personal
+      y aprendizajes profesionales.
+    use_when:
+      - experiencia profesional
+      - prácticas
+      - trabajo en AHORA
+      - responsabilidades
+      - Power BI
+      - automatización empresarial
+      - aprendizajes laborales
+    do_not_use_for:
+      - arquitectura detallada de proyectos
+      - descripción completa del TFG
+
+  technical_skills:
+    file: Informacion/Habilidades_tecnicas.md
+    description: >
+      Habilidades técnicas, tecnologías conocidas, nivel de experiencia,
+      contextos de utilización y evidencias relacionadas.
+    use_when:
+      - tecnologías
+      - lenguajes de programación
+      - herramientas
+      - conocimientos técnicos
+      - competencias de inteligencia artificial
+    do_not_use_for:
+      - explicación detallada de una arquitectura
+      - decisiones técnicas específicas de un proyecto
+
+  academic_ai_knowledge:
+    file: Informacion/Habilidades_carrera_IA.md
+    description: >
+      Conocimientos académicos adquiridos en el Grado en Inteligencia
+      Artificial, asignaturas cursadas, fundamentos técnicos universitarios
+      y áreas formativas trabajadas durante la carrera.
+    use_when:
+      - conocimientos del grado
+      - asignaturas de inteligencia artificial
+      - formación universitaria en IA
+      - base matemática para IA
+      - aprendizaje automático académico
+      - inteligencia artificial simbólica
+      - procesamiento del lenguaje natural académico
+      - visión artificial académica
+      - sistemas distribuidos y paralelismo
+      - ética y legislación de IA
+    do_not_use_for:
+      - evidencias concretas de proyectos implementados
+      - nivel de experiencia profesional en una tecnología
+      - responsabilidades laborales
+
+  languages:
+    file: Informacion/Idiomas.md
+    description: >
+      Idiomas utilizados por Duarte, niveles declarados, certificaciones
+      oficiales y contextos de uso académico, profesional o cotidiano.
+    use_when:
+      - idiomas
+      - nivel de inglés
+      - nivel de francés
+      - certificaciones lingüísticas
+      - comunicación en gallego o español
+    do_not_use_for:
+      - certificaciones no lingüísticas
+      - formación universitaria general
+
+  career_goals:
+    file: Informacion/Objetivos_profesionales.md
+    description: >
+      Objetivos profesionales, áreas de interés, puestos buscados,
+      preferencias de aprendizaje y expectativas laborales.
+    use_when:
+      - objetivos profesionales
+      - tipo de puesto buscado
+      - motivaciones
+      - áreas de interés
+      - desarrollo profesional
+    do_not_use_for:
+      - disponibilidad concreta si no está documentada
+      - motivación específica por una empresa no analizada
+
+  project_index:
+    file: Informacion/Indice_de_proyectos.md
+    description: >
+      Catálogo de proyectos realizados por Duarte, con identificadores,
+      descripciones breves, tecnologías, estado, enlaces y documentos
+      asociados.
+    use_when:
+      - listado de proyectos
+      - selección de proyectos por tecnología
+      - proyectos desplegados
+      - proyectos relacionados con una competencia
+      - identificación del proyecto sobre el que profundizar
+    do_not_use_for:
+      - explicación técnica detallada del proyecto
+      - decisiones de arquitectura
+      - problemas y limitaciones técnicas
+
+  tfg:
+    file: Informacion/TFG.md
+    description: >
+      Memoria completa del Trabajo Fin de Grado de Duarte sobre el diseño,
+      implementación y validación de un prototipo RAG híbrido para consultar
+      documentación corporativa en PDF. Incluye objetivos, arquitectura,
+      procesamiento documental, chunking, BM25, embeddings, ChromaDB, RRF,
+      reranking, generación, pruebas, resultados, limitaciones y trabajo futuro.
+    use_when:
+      - TFG
+      - Trabajo Fin de Grado
+      - proyecto RAG híbrido
+      - arquitectura del TFG
+      - funcionamiento del sistema RAG
+      - procesamiento y limpieza de documentos PDF
+      - chunking y segmentación documental
+      - BM25 y recuperación léxica
+      - embeddings y ChromaDB
+      - Reciprocal Rank Fusion o RRF
+      - reranking BGE o Jina
+      - generación de respuestas con fuentes
+      - pruebas y resultados del TFG
+      - decisiones técnicas del TFG
+      - limitaciones y mejoras futuras del proyecto
+      - instalación y ejecución del proyecto RAG
+    do_not_use_for:
+      - información personal no relacionada con el TFG
+      - experiencia laboral general fuera de este proyecto
+      - formación académica no vinculada al TFG
+      - detalles de otros proyectos
