@@ -29,6 +29,14 @@ HOST = "127.0.0.1"
 MAX_REQUEST_BYTES = 32_768
 MAX_HISTORY_MESSAGES = 8
 MAX_HISTORY_CHARS = 24_000
+CONTACT_REMINDER_QUESTION_NUMBERS = frozenset({3, 8, 15, 25})
+CONTACT_REMINDER = (
+    "## Contacto\n\n"
+    "Puedes contactar a Duarte a través de "
+    "[LinkedIn](https://www.linkedin.com/in/dfernandezpineiro), "
+    "[correo](mailto:dfernandezpineiro@gmail.com) o "
+    "[635 763 949](tel:+34635763949)."
+)
 
 load_dotenv(chat_core.ENV_PATH, override=True)
 
@@ -107,6 +115,34 @@ def normalizar_historial(raw_history: object) -> list[dict[str, str]]:
     return normalized
 
 
+def normalizar_numero_pregunta(raw_question_number: object) -> int:
+    """Valida el número de pregunta dentro de una conversación web."""
+    if isinstance(raw_question_number, bool) or not isinstance(raw_question_number, int):
+        raise ValueError("El número de pregunta debe ser un entero.")
+    if raw_question_number < 1:
+        raise ValueError("El número de pregunta debe ser mayor que cero.")
+    return raw_question_number
+
+
+def mostrar_recordatorio_contacto(question_number: int) -> bool:
+    """Indica si la respuesta debe cerrar con las vías de contacto."""
+    return question_number in CONTACT_REMINDER_QUESTION_NUMBERS
+
+
+def incluir_recordatorio_contacto(
+    response_stream: Iterator[str], question_number: int
+) -> Iterator[str]:
+    """Añade el recordatorio al terminar las respuestas configuradas."""
+    emitted_response = False
+    for delta in response_stream:
+        if delta:
+            emitted_response = True
+            yield delta
+
+    if emitted_response and mostrar_recordatorio_contacto(question_number):
+        yield f"\n\n{CONTACT_REMINDER}"
+
+
 class ChatRequestHandler(SimpleHTTPRequestHandler):
     """Sirve la interfaz y expone la API local del chat."""
 
@@ -152,6 +188,7 @@ class ChatRequestHandler(SimpleHTTPRequestHandler):
                 str(payload.get("detailLevel", chat_core.DEFAULT_DETAIL_LEVEL))
             )
             history = normalizar_historial(payload.get("history"))
+            question_number = normalizar_numero_pregunta(payload.get("questionNumber"))
 
             if not question:
                 raise ValueError("Escribe una pregunta antes de enviar.")
@@ -161,7 +198,7 @@ class ChatRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
-        self.stream_text_response(question, detail_level, history)
+        self.stream_text_response(question, detail_level, history, question_number)
 
     def translate_path(self, path: str) -> str:
         path = unquote(urlsplit(path).path)
@@ -235,8 +272,13 @@ class ChatRequestHandler(SimpleHTTPRequestHandler):
         question: str,
         detail_level: str,
         history: list[dict[str, str]],
+        question_number: int,
     ) -> None:
-        response_stream = iter(stream_chat_response(question, detail_level, history))
+        response_stream = iter(
+            incluir_recordatorio_contacto(
+                stream_chat_response(question, detail_level, history), question_number
+            )
+        )
 
         try:
             first_delta = next(response_stream)

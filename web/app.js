@@ -22,6 +22,8 @@ let isRequestPending = false;
 let activeController = null;
 let stopRequested = false;
 let conversationHistory = [];
+let completedQuestionCount = 0;
+let conversationGeneration = 0;
 
 function selectedDetailLevel() {
   return document.querySelector("input[name='detail']:checked").value;
@@ -220,7 +222,7 @@ function initialTheme() {
 }
 
 function appendInlineContent(parent, text) {
-  const tokenPattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|mailto:)[^)]+\))/g;
+  const tokenPattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|mailto:|tel:)[^)]+\))/g;
   let cursor = 0;
 
   for (const match of text.matchAll(tokenPattern)) {
@@ -367,10 +369,12 @@ async function configureCVLink() {
 }
 
 function resetConversation() {
+  conversationGeneration += 1;
   activeController?.abort();
   activeController = null;
   stopRequested = false;
   conversationHistory = [];
+  completedQuestionCount = 0;
   conversation.classList.remove("has-conversation");
   chatPanel.classList.remove("chat-active");
   chatPanel.classList.add("chat-empty");
@@ -431,6 +435,11 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  const questionNumber = conversationHistory.length
+    ? completedQuestionCount + 1
+    : 1;
+  const requestGeneration = conversationGeneration;
+
   clearWelcome();
   createMessage("user", question);
   input.value = "";
@@ -466,6 +475,9 @@ form.addEventListener("submit", async (event) => {
   };
 
   const appendDelta = (delta) => {
+    if (requestGeneration !== conversationGeneration) {
+      return;
+    }
     if (!hasStartedStreaming) {
       beginStreaming(pendingMessage);
       hasStartedStreaming = true;
@@ -487,6 +499,7 @@ form.addEventListener("submit", async (event) => {
         message: question,
         detailLevel: selectedDetailLevel(),
         history: conversationHistory,
+        questionNumber,
       }),
       signal: controller.signal,
     });
@@ -531,6 +544,10 @@ form.addEventListener("submit", async (event) => {
       throw new Error("La respuesta llegó vacía. Puedes volver a intentarlo.");
     }
 
+    if (requestGeneration !== conversationGeneration) {
+      return;
+    }
+
     flushRender();
     finishStreaming(pendingMessage, answer);
     conversationHistory.push(
@@ -538,9 +555,14 @@ form.addEventListener("submit", async (event) => {
       { role: "assistant", content: answer },
     );
     conversationHistory = conversationHistory.slice(-8);
+    completedQuestionCount = questionNumber;
     statusRegion.textContent = "Respuesta completada.";
     scrollToLatest();
   } catch (error) {
+    if (requestGeneration !== conversationGeneration) {
+      return;
+    }
+
     if (renderTimer !== null) {
       window.clearTimeout(renderTimer);
       renderTimer = null;
@@ -579,8 +601,10 @@ form.addEventListener("submit", async (event) => {
     if (activeController === controller) {
       activeController = null;
     }
-    setLoading(false);
-    input.focus();
+    if (requestGeneration === conversationGeneration) {
+      setLoading(false);
+      input.focus();
+    }
   }
 });
 
