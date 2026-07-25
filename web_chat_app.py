@@ -51,6 +51,9 @@ SESSION_COOKIE = "duarte_chat_session"
 COOKIE_SECURE = os.getenv("CHAT_COOKIE_SECURE", "false").lower() == "true"
 ENABLE_HSTS = os.getenv("CHAT_ENABLE_HSTS", "false").lower() == "true"
 PUBLIC_ORIGIN = os.getenv("CHAT_PUBLIC_ORIGIN", "").rstrip("/")
+POSTHOG_PUBLIC_KEY = os.getenv("POSTHOG_PUBLIC_KEY", "").strip()
+POSTHOG_HOST = os.getenv("POSTHOG_HOST", "https://eu.i.posthog.com").strip().rstrip("/")
+POSTHOG_ALLOWED_HOSTS = frozenset({"https://eu.i.posthog.com", "https://us.i.posthog.com"})
 CONTACT_REMINDER_QUESTION_NUMBERS = frozenset({3, 8, 15, 25})
 CONTACT_REMINDER = (
     "## Contacto\n\n"
@@ -155,6 +158,7 @@ class QueueTicket:
 
     position: int = 0
     acquired: bool = False
+    created_at: float = field(default_factory=time.monotonic)
 
 
 class RequestGate:
@@ -288,8 +292,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=()"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+            "default-src 'self'; script-src 'self' https://*.posthog.com; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self' https://*.posthog.com; object-src 'none'; base-uri 'none'; "
+            "frame-ancestors 'none'; form-action 'self'"
         )
         if request.url.path.startswith("/api/") or request.url.path in {"/healthz", "/readyz"}:
             response.headers["Cache-Control"] = "no-store"
@@ -379,6 +384,23 @@ def api_health() -> dict[str, object]:
     return {"status": "ok" if CLIENT is not None else "configuration_required", "ready": CLIENT is not None}
 
 
+@app.get("/api/public-config")
+def public_config() -> dict[str, object]:
+    """Configuración segura que el navegador puede conocer.
+
+    La clave de proyecto de PostHog es pública por diseño; la clave de OpenAI nunca
+    se incluye aquí. Una configuración de host no reconocida desactiva la analítica.
+    """
+    analytics_enabled = bool(POSTHOG_PUBLIC_KEY and POSTHOG_HOST in POSTHOG_ALLOWED_HOSTS)
+    return {
+        "analytics": {
+            "enabled": analytics_enabled,
+            "posthogKey": POSTHOG_PUBLIC_KEY if analytics_enabled else "",
+            "posthogHost": POSTHOG_HOST if analytics_enabled else "",
+        }
+    }
+
+
 @app.post("/api/chat")
 def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
     if CLIENT is None:
@@ -399,15 +421,20 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
         completed = False
         revision = -1
         answer_parts: list[str] = []
+        generation_started_at: float | None = None
+        first_delta_at: float | None = None
+        question_number = 0
         try:
             if ticket.position:
                 yield ndjson_event(
                     {
                         "type": "queued",
                         "message": f"Tu consulta está en cola (posición {ticket.position}).",
+                        "position": ticket.position,
                     }
                 )
             GATE.wait_for_turn(ticket)
+            generation_started_at = time.monotonic()
             yield ndjson_event({"type": "status", "message": "El asistente está preparando una respuesta."})
             history, question_number, revision = SESSIONS.begin(session_id, payload.resetConversation)
             response_stream = incluir_recordatorio_contacto(
@@ -415,9 +442,25 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
                 question_number,
             )
             for delta in response_stream:
+                if first_delta_at is None:
+                    first_delta_at = time.monotonic()
                 answer_parts.append(delta)
                 yield ndjson_event({"type": "delta", "text": delta})
             completed = True
+            finished_at = time.monotonic()
+            yield ndjson_event(
+                {
+                    "type": "metrics",
+                    "detailLevel": detail_level,
+                    "questionNumber": question_number,
+                    "queueWaitMs": round((generation_started_at - ticket.created_at) * 1_000),
+                    "timeToFirstTokenMs": (
+                        round((first_delta_at - ticket.created_at) * 1_000) if first_delta_at is not None else None
+                    ),
+                    "generationDurationMs": round((finished_at - generation_started_at) * 1_000),
+                    "answerCharacters": sum(len(part) for part in answer_parts),
+                }
+            )
             yield ndjson_event({"type": "done"})
         except (BrokenPipeError, ConnectionResetError):
             return

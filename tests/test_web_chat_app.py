@@ -1,3 +1,4 @@
+import json
 import unittest
 from threading import Event, Thread
 from unittest.mock import patch
@@ -93,7 +94,29 @@ class WebChatAppTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(page.status_code, 200)
         self.assertIn("Content-Security-Policy", page.headers)
+        self.assertIn("https://*.posthog.com", page.headers["content-security-policy"])
         self.assertEqual(page.headers["x-frame-options"], "DENY")
+
+    def test_configuracion_publica_solo_expone_la_clave_publica_de_analitica(self):
+        with (
+            patch.object(web_chat_app, "POSTHOG_PUBLIC_KEY", "phc_public_test"),
+            patch.object(web_chat_app, "POSTHOG_HOST", "https://eu.i.posthog.com"),
+            TestClient(web_chat_app.app, base_url="http://localhost") as client,
+        ):
+            response = client.get("/api/public-config")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "analytics": {
+                    "enabled": True,
+                    "posthogKey": "phc_public_test",
+                    "posthogHost": "https://eu.i.posthog.com",
+                }
+            },
+        )
+        self.assertNotIn("OPENAI", response.text)
 
     def test_api_mantiene_contexto_y_recordatorio_con_los_tres_niveles(self):
         def fake_stream(question, detail_level, history):
@@ -128,6 +151,15 @@ class WebChatAppTests(unittest.TestCase):
         self.assertNotIn("## Contacto", answers[1])
         self.assertIn("## Contacto", answers[2])
         self.assertIn('"type": "status"', answers[0])
+        first_metrics = next(
+            json.loads(line)
+            for line in answers[0].splitlines()
+            if json.loads(line).get("type") == "metrics"
+        )
+        self.assertEqual(first_metrics["detailLevel"], "breve")
+        self.assertEqual(first_metrics["questionNumber"], 1)
+        self.assertNotIn("Pregunta", json.dumps(first_metrics))
+        self.assertNotIn("Respuesta", json.dumps(first_metrics))
 
     def test_api_rechaza_cuerpo_demasiado_grande(self):
         with TestClient(web_chat_app.app, base_url="http://localhost") as client:

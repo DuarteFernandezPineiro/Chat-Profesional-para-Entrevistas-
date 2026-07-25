@@ -5,7 +5,7 @@ habilidades, proyectos y objetivos profesionales de Duarte Fernández Piñeiro. 
 respuestas se generan a partir de los documentos Markdown de `Informacion/`.
 
 La aplicación se ejecuta como servidor ASGI con FastAPI y Uvicorn, por lo que se
-puede usar en local y desplegar directamente como servicio web en Koyeb.
+puede usar en local y desplegar directamente como servicio web en DigitalOcean App Platform.
 
 ## Puesta en marcha local
 
@@ -40,23 +40,23 @@ consulta y empezar una conversación nueva. El historial de la conversación y s
 contador se guardan en el servidor durante una hora, no en datos que el navegador
 pueda manipular.
 
-## Despliegue en Koyeb
+## Despliegue en DigitalOcean App Platform
 
-El repositorio contiene un `Dockerfile` listo para Koyeb. Crea un servicio web desde
-el repositorio de GitHub, selecciona la compilación mediante Dockerfile y configura
-la ruta de comprobación de salud como `/healthz`. No hace falta definir un comando de
-ejecución: el contenedor usa el puerto asignado por Koyeb (`PORT`) y escucha en
-`0.0.0.0`.
+El repositorio contiene un `Dockerfile` listo para App Platform. Crea un servicio web
+desde el repositorio de GitHub, selecciona la compilación mediante Dockerfile y
+configura la ruta de comprobación de salud como `/healthz`. No hace falta definir un
+comando de ejecución: el contenedor usa el puerto asignado por la plataforma (`PORT`)
+y escucha en `0.0.0.0`.
 
-Configura estos valores como secretos o variables de entorno en Koyeb:
+Configura estos valores como secretos o variables de entorno en App Platform:
 
 | Variable | Valor de producción |
 | --- | --- |
-| `OPENAI_API_KEY` | Clave secreta de OpenAI, solo en Koyeb; nunca en el repositorio. |
+| `OPENAI_API_KEY` | Clave secreta de OpenAI, solo en App Platform; nunca en el repositorio. |
 | `OPENAI_MODEL` | `gpt-5.5` o el modelo aprobado que se utilice. |
 | `CHAT_COOKIE_SECURE` | `true` |
 | `CHAT_ENABLE_HSTS` | `true` |
-| `CHAT_PUBLIC_ORIGIN` | URL pública exacta, por ejemplo `https://tu-app.koyeb.app`. |
+| `CHAT_PUBLIC_ORIGIN` | URL pública exacta, por ejemplo `https://tu-app.ondigitalocean.app`. |
 | `CHAT_ALLOWED_HOSTS` | Dominio público separado por comas; añade el dominio propio si se configura. |
 
 Para una instancia pequeña con 2–3 usuarios simultáneos, los valores predeterminados
@@ -69,6 +69,24 @@ justifican.
 La sesión es efímera y se conserva en la memoria de una sola instancia. Mantén una
 réplica mientras se use esta arquitectura; si en el futuro se escala a varias
 réplicas, sustituye el almacén de sesiones por Redis o una base de datos compartida.
+
+## Analítica opcional con PostHog
+
+La integración está desactivada hasta que se configure `POSTHOG_PUBLIC_KEY`. Con una
+cuenta de PostHog en la región europea, añade estas variables de entorno en App
+Platform y vuelve a desplegar:
+
+| Variable | Valor |
+| --- | --- |
+| `POSTHOG_PUBLIC_KEY` | Clave de proyecto que empieza por `phc_`. Es pública por diseño: se entrega al navegador. |
+| `POSTHOG_HOST` | `https://eu.i.posthog.com` |
+
+Al aceptar el aviso de analítica, el navegador envía solo eventos agregados:
+visitas, inicio/finalización/cancelación/error de una consulta, nivel de detalle,
+posición en cola, número de pregunta, longitud de la respuesta y tiempos. No envía
+la pregunta, la respuesta, el historial, la clave de OpenAI ni datos de contacto. La
+captura automática y la grabación de sesión se desactivan explícitamente; además se
+respeta la preferencia Do Not Track del navegador.
 
 ## Seguridad y rendimiento
 
