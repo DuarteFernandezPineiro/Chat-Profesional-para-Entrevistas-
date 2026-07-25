@@ -3,7 +3,7 @@ schema_version: "1.0"
 document_id: project_index
 document_type: structured_project_routing_index
 language: es
-last_updated: "2026-07-21"
+last_updated: "2026-07-25"
 source_of_truth:
   - current_markdown_project_summaries
   - verified_local_files
@@ -72,6 +72,12 @@ technology_categories:
     name: Sistemas y concurrencia
   - category_id: tooling
     name: Herramientas y validación
+  - category_id: web_framework
+    name: Framework web y servidor ASGI
+  - category_id: cloud_deployment
+    name: Contenedores y despliegue cloud
+  - category_id: product_analytics
+    name: Analítica de producto
 
 technologies:
   - technology_id: python
@@ -90,6 +96,30 @@ technologies:
     canonical_name: C++
     aliases: [C++, cpp]
     category_id: programming_language
+  - technology_id: javascript
+    canonical_name: JavaScript
+    aliases: [JavaScript, JS, JavaScript vanilla]
+    category_id: programming_language
+  - technology_id: fastapi
+    canonical_name: FastAPI
+    aliases: [FastAPI, ASGI]
+    category_id: web_framework
+  - technology_id: uvicorn
+    canonical_name: Uvicorn
+    aliases: [Uvicorn]
+    category_id: web_framework
+  - technology_id: docker
+    canonical_name: Docker
+    aliases: [Docker, Dockerfile, contenedores]
+    category_id: cloud_deployment
+  - technology_id: digitalocean_app_platform
+    canonical_name: DigitalOcean App Platform
+    aliases: [DigitalOcean App Platform, DigitalOcean, App Platform]
+    category_id: cloud_deployment
+  - technology_id: posthog
+    canonical_name: PostHog
+    aliases: [PostHog, analítica de producto, product analytics]
+    category_id: product_analytics
   - technology_id: openai_responses_api
     canonical_name: OpenAI Responses API
     aliases: [OpenAI Responses API, Responses API]
@@ -786,6 +816,65 @@ projects:
       - Contexto académico en equipo.
       - No atribuir línea por línea todos los componentes.
       - La ruta advanced declarada en el summary no existe en esta carpeta.
+
+  - project_id: project_asistente_profesional_web
+    canonical_name: Asistente profesional web para entrevistas
+    short_name: Asistente profesional web
+    aliases:
+      - asistente profesional para entrevistas
+      - chat profesional de Duarte
+      - asistente personal de contratación
+      - perfil profesional conversacional
+      - chatbot público con FastAPI y OpenAI
+    project_type: personal
+    status: deployed_publicly
+    featured: true
+    interview_priority: 2
+    areas: [applied_artificial_intelligence, natural_language_processing, software_engineering, reactive_systems]
+    tags: [openai, fastapi, asgi, streaming, seguridad web, concurrencia, docker, digitalocean, posthog]
+    primary_technology_ids: [python, javascript, fastapi, uvicorn, openai_responses_api, pydantic, docker, digitalocean_app_platform, posthog]
+    secondary_technology_ids: []
+    role:
+      collaboration_type: individual
+      title: designer_developer_and_deployer
+      context: personal_public_project
+    personal_contributions:
+      - Diseño e implementación de una aplicación web pública para presentar el perfil profesional de Duarte mediante conversación.
+      - Desarrollo del backend FastAPI/ASGI, la interfaz HTML/CSS/JavaScript y el streaming de respuestas mediante OpenAI Responses API.
+      - Implementación del acceso controlado a documentos Markdown, selección de contexto, sesiones efímeras en servidor y tres niveles de detalle de respuesta.
+      - Implementación de una cola FIFO que atiende dos generaciones en paralelo y mantiene en espera las consultas adicionales dentro de límites configurables.
+      - Aplicación de medidas de seguridad web, contenedorización con Docker, despliegue en DigitalOcean App Platform y analítica opcional con consentimiento en PostHog.
+    team_contributions: []
+    provided_components:
+      - OpenAI Responses API como servicio externo de planificación, consulta documental y generación en streaming.
+      - DigitalOcean App Platform como plataforma gestionada de despliegue.
+      - PostHog Cloud como servicio externo opcional de analítica agregada.
+    not_personally_implemented:
+      - Modelos y servicio gestionado de OpenAI.
+      - Infraestructura gestionada de DigitalOcean y PostHog.
+    short_pitch: Aplicación web pública que representa el perfil profesional de Duarte y responde en streaming con evidencia de documentos Markdown. Combina FastAPI/ASGI, OpenAI Responses API, sesiones efímeras en servidor, límites de seguridad, concurrencia con cola FIFO, Docker, despliegue cloud y analítica opcional respetuosa con la privacidad.
+    objective: Ofrecer a reclutadores y entrevistadores una forma pública, rápida y conversacional de conocer el perfil, proyectos y capacidades de Duarte.
+    problem_solved: Centraliza información profesional estructurada en una interfaz conversacional, manteniendo el contexto por sesión y controlando el acceso a documentos y recursos del servidor.
+    verifiable_results:
+      - Aplicación desplegada públicamente en DigitalOcean App Platform y servida desde un contenedor Docker.
+      - Respuesta en streaming con tres niveles de detalle y recordatorios de contacto en las preguntas 3, 8, 15 y 25.
+      - Dos generaciones simultáneas permitidas y hasta veinte consultas adicionales en cola FIFO mediante valores predeterminados configurables.
+      - Sesiones HttpOnly con expiración, historial acotado y 18 pruebas automatizadas locales verificadas en el repositorio.
+      - Analítica PostHog activable por consentimiento; registra métricas agregadas sin enviar preguntas, respuestas ni historial.
+    competency_ids: [skill_python, skill_openai_api, skill_fastapi_asgi, skill_frontend_web, skill_concurrencia_web, skill_seguridad_web, skill_despliegue_cloud, skill_analitica_producto, skill_testing_validacion, skill_diseno_modular]
+    summary_path: null
+    advanced_path: null
+    repository: https://github.com/tostadito33/Chat-Profesional-para-Entrevistas-.git
+    demo: https://asistente-personal-contratacion-9i9eg.ondigitalocean.app/
+    rag_enabled: true
+    retrieval_metadata:
+      project_id: project_asistente_profesional_web
+      allowed_document_types: [repository]
+    evidence_strength: verified_repository_and_deployment
+    known_limitations:
+      - Las sesiones se guardan en memoria de una sola instancia; escalar a varias réplicas requeriría un almacén compartido.
+      - La generación de respuestas depende de la disponibilidad y configuración de OpenAI.
+      - La analítica solo recoge eventos de los usuarios que dan consentimiento y no tienen bloqueada su carga.
 
 generated_indexes:
   area_index: derived_from_projects_areas
