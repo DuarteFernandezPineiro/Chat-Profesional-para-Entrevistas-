@@ -1,5 +1,6 @@
 import json
 import unittest
+from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
 
@@ -117,6 +118,10 @@ class WebChatAppTests(unittest.TestCase):
             },
         )
         self.assertNotIn("OPENAI", response.text)
+
+    def test_cliente_activa_la_configuracion_de_analitica_al_cargar(self):
+        app_script = (Path(web_chat_app.WEB_ROOT) / "app.js").read_text(encoding="utf-8")
+        self.assertIn("void configureAnalytics();", app_script)
 
     def test_api_mantiene_contexto_y_recordatorio_con_los_tres_niveles(self):
         def fake_stream(question, detail_level, history):

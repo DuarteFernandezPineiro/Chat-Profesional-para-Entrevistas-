@@ -541,6 +541,7 @@ themeToggle.addEventListener("click", () => {
 newChatButton.addEventListener("click", resetConversation);
 bindSuggestedQuestions();
 void configureCVLink();
+void configureAnalytics();
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
