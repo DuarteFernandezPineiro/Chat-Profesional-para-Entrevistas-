@@ -1,4 +1,4 @@
-const REQUEST_TIMEOUT_MS = 75_000;
+const REQUEST_TIMEOUT_MS = 600_000;
 // Sustituye el archivo en `web/` manteniendo este nombre para actualizar el CV.
 const CV_URL = "/CV_Duarte_Fernandez_Pineiro.pdf";
 
@@ -389,7 +389,7 @@ function resetConversation() {
   input.focus();
 }
 
-function processStreamLine(line, onDelta) {
+function processStreamLine(line, onDelta, onStatus) {
   let event;
   try {
     event = JSON.parse(line);
@@ -399,6 +399,10 @@ function processStreamLine(line, onDelta) {
 
   if (event.type === "delta" && typeof event.text === "string") {
     onDelta(event.text);
+    return false;
+  }
+  if ((event.type === "queued" || event.type === "status") && typeof event.message === "string") {
+    onStatus(event.message);
     return false;
   }
   if (event.type === "done") {
@@ -486,6 +490,17 @@ form.addEventListener("submit", async (event) => {
     }
   };
 
+  const updateStreamStatus = (message) => {
+    if (requestGeneration !== conversationGeneration) {
+      return;
+    }
+    statusRegion.textContent = message;
+    const loadingLabel = pendingMessage.bubble.querySelector(".loading-content > span:last-child");
+    if (loadingLabel) {
+      loadingLabel.textContent = message;
+    }
+  };
+
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -521,7 +536,7 @@ form.addEventListener("submit", async (event) => {
         const line = buffer.slice(0, newlineIndex).trim();
         buffer = buffer.slice(newlineIndex + 1);
         if (line) {
-          streamCompleted = processStreamLine(line, appendDelta) || streamCompleted;
+          streamCompleted = processStreamLine(line, appendDelta, updateStreamStatus) || streamCompleted;
         }
         newlineIndex = buffer.indexOf("\n");
       }
@@ -532,7 +547,7 @@ form.addEventListener("submit", async (event) => {
     }
 
     if (buffer.trim()) {
-      streamCompleted = processStreamLine(buffer.trim(), appendDelta) || streamCompleted;
+      streamCompleted = processStreamLine(buffer.trim(), appendDelta, updateStreamStatus) || streamCompleted;
     }
     if (!streamCompleted) {
       throw new Error("La conexión se cerró antes de completar la respuesta.");

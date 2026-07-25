@@ -1,4 +1,5 @@
 import unittest
+from threading import Event, Thread
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -54,14 +55,33 @@ class WebChatAppTests(unittest.TestCase):
         response = "".join(web_chat_app.incluir_recordatorio_contacto(iter(["Respuesta."]), 4))
         self.assertEqual(response, "Respuesta.")
 
-    def test_limite_global_de_concurrencia(self):
+    def test_dos_peticiones_simultaneas_y_tercera_en_cola(self):
         gate = web_chat_app.RequestGate()
-        for index in range(web_chat_app.MAX_CONCURRENT_GENERATIONS):
-            gate.acquire(f"192.0.2.{index}")
-        with self.assertRaises(Exception):
-            gate.acquire("192.0.2.99")
-        for index in range(web_chat_app.MAX_CONCURRENT_GENERATIONS):
-            gate.release(f"192.0.2.{index}")
+        first = gate.reserve("192.0.2.1")
+        second = gate.reserve("192.0.2.1")
+        queued = gate.reserve("192.0.2.1")
+
+        self.assertTrue(first.acquired)
+        self.assertTrue(second.acquired)
+        self.assertFalse(queued.acquired)
+        self.assertEqual(queued.position, 1)
+
+        admitted = Event()
+
+        def wait_for_ticket():
+            gate.wait_for_turn(queued)
+            admitted.set()
+
+        worker = Thread(target=wait_for_ticket)
+        worker.start()
+        self.assertFalse(admitted.wait(0.1))
+
+        gate.release(first)
+        self.assertTrue(admitted.wait(1))
+        self.assertTrue(queued.acquired)
+        gate.release(second)
+        gate.release(queued)
+        worker.join(1)
 
     def test_endpoints_de_estado_y_cabeceras_de_seguridad(self):
         with TestClient(web_chat_app.app, base_url="http://localhost") as client:
@@ -107,6 +127,7 @@ class WebChatAppTests(unittest.TestCase):
         self.assertNotIn("## Contacto", answers[0])
         self.assertNotIn("## Contacto", answers[1])
         self.assertIn("## Contacto", answers[2])
+        self.assertIn('"type": "status"', answers[0])
 
     def test_api_rechaza_cuerpo_demasiado_grande(self):
         with TestClient(web_chat_app.app, base_url="http://localhost") as client:

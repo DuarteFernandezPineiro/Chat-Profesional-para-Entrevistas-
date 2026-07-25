@@ -59,10 +59,11 @@ Configura estos valores como secretos o variables de entorno en Koyeb:
 | `CHAT_PUBLIC_ORIGIN` | URL pública exacta, por ejemplo `https://tu-app.koyeb.app`. |
 | `CHAT_ALLOWED_HOSTS` | Dominio público separado por comas; añade el dominio propio si se configura. |
 
-Para una instancia Eco Micro con 2–3 usuarios simultáneos, los valores predeterminados
-son deliberadamente conservadores: una respuesta activa por IP, tres generaciones
-globales y doce solicitudes por minuto e IP. Pueden ajustarse con
-`CHAT_MAX_CONCURRENT_GENERATIONS` y `CHAT_MAX_REQUESTS_PER_MINUTE` si las métricas lo
+Para una instancia pequeña con 2–3 usuarios simultáneos, los valores predeterminados
+permiten dos generaciones en paralelo y colocan hasta veinte consultas adicionales en
+una cola FIFO. Se conservan doce solicitudes por minuto e IP como protección frente a
+abuso. Los límites se pueden ajustar con `CHAT_MAX_CONCURRENT_GENERATIONS`,
+`CHAT_MAX_QUEUED_GENERATIONS` y `CHAT_MAX_REQUESTS_PER_MINUTE` si las métricas lo
 justifican.
 
 La sesión es efímera y se conserva en la memoria de una sola instancia. Mantén una

@@ -41,7 +41,8 @@ load_dotenv(chat_core.ENV_PATH, override=False)
 MAX_REQUEST_BYTES = 32_768
 MAX_HISTORY_MESSAGES = 8
 MAX_HISTORY_CHARS = 24_000
-MAX_CONCURRENT_GENERATIONS = int(os.getenv("CHAT_MAX_CONCURRENT_GENERATIONS", "3"))
+MAX_CONCURRENT_GENERATIONS = int(os.getenv("CHAT_MAX_CONCURRENT_GENERATIONS", "2"))
+MAX_QUEUED_GENERATIONS = int(os.getenv("CHAT_MAX_QUEUED_GENERATIONS", "20"))
 MAX_REQUESTS_PER_MINUTE = int(os.getenv("CHAT_MAX_REQUESTS_PER_MINUTE", "12"))
 SESSION_TTL_SECONDS = int(os.getenv("CHAT_SESSION_TTL_SECONDS", "3600"))
 MAX_SESSIONS = int(os.getenv("CHAT_MAX_SESSIONS", "500"))
@@ -148,18 +149,27 @@ class ConversationStore:
             state.last_seen = time.monotonic()
 
 
+@dataclass
+class QueueTicket:
+    """Representa una petición que espera su turno de generación."""
+
+    position: int = 0
+    acquired: bool = False
+
+
 class RequestGate:
-    """Limita coste y carga por IP en una instancia pequeña."""
+    """Permite dos respuestas en paralelo y ordena el resto en una cola FIFO."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._condition = threading.Condition()
         self._recent: dict[str, deque[float]] = defaultdict(deque)
-        self._active_by_ip: dict[str, int] = defaultdict(int)
+        self._waiting: deque[QueueTicket] = deque()
         self._active_total = 0
 
-    def acquire(self, client_ip: str) -> None:
+    def reserve(self, client_ip: str) -> QueueTicket:
+        """Registra la petición y devuelve un ticket inmediato o en cola."""
         now = time.monotonic()
-        with self._lock:
+        with self._condition:
             if client_ip not in self._recent and len(self._recent) >= MAX_TRACKED_CLIENTS:
                 stale_clients = [
                     ip for ip, entries in self._recent.items()
@@ -168,24 +178,48 @@ class RequestGate:
                 for stale_ip in stale_clients:
                     self._recent.pop(stale_ip, None)
                 if len(self._recent) >= MAX_TRACKED_CLIENTS:
-                    raise HTTPException(503, "El asistente estÃ¡ atendiendo otras consultas. IntÃ©ntalo de nuevo en unos segundos.")
+                    raise HTTPException(503, "El asistente no puede aceptar más consultas en este momento.")
+
             entries = self._recent[client_ip]
             while entries and now - entries[0] >= 60:
                 entries.popleft()
             if len(entries) >= MAX_REQUESTS_PER_MINUTE:
                 raise HTTPException(429, "Has alcanzado el límite temporal de consultas. Inténtalo de nuevo en un minuto.")
-            if self._active_by_ip[client_ip] >= 1:
-                raise HTTPException(429, "Espera a que termine la respuesta actual antes de enviar otra pregunta.")
-            if self._active_total >= MAX_CONCURRENT_GENERATIONS:
-                raise HTTPException(503, "El asistente está atendiendo otras consultas. Inténtalo de nuevo en unos segundos.")
             entries.append(now)
-            self._active_by_ip[client_ip] += 1
-            self._active_total += 1
 
-    def release(self, client_ip: str) -> None:
-        with self._lock:
-            self._active_by_ip[client_ip] = max(0, self._active_by_ip[client_ip] - 1)
+            if self._active_total < MAX_CONCURRENT_GENERATIONS and not self._waiting:
+                self._active_total += 1
+                return QueueTicket(acquired=True)
+            if len(self._waiting) >= MAX_QUEUED_GENERATIONS:
+                raise HTTPException(503, "La cola de consultas está llena. Inténtalo de nuevo en unos minutos.")
+
+            ticket = QueueTicket(position=len(self._waiting) + 1)
+            self._waiting.append(ticket)
+            return ticket
+
+    def wait_for_turn(self, ticket: QueueTicket) -> None:
+        """Bloquea solo las peticiones en cola hasta que haya capacidad disponible."""
+        if ticket.acquired:
+            return
+        with self._condition:
+            while not (self._waiting and self._waiting[0] is ticket and self._active_total < MAX_CONCURRENT_GENERATIONS):
+                self._condition.wait()
+            self._waiting.popleft()
+            self._active_total += 1
+            ticket.acquired = True
+
+    def release(self, ticket: QueueTicket) -> None:
+        with self._condition:
+            if not ticket.acquired:
+                try:
+                    self._waiting.remove(ticket)
+                except ValueError:
+                    pass
+                self._condition.notify_all()
+                return
+            ticket.acquired = False
             self._active_total = max(0, self._active_total - 1)
+            self._condition.notify_all()
 
 
 SESSIONS = ConversationStore()
@@ -358,23 +392,28 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     ip_address = client_ip(request)
-    GATE.acquire(ip_address)
     session_id, _ = SESSIONS.get_or_create(request.cookies.get(SESSION_COOKIE))
-    try:
-        history, question_number, revision = SESSIONS.begin(session_id, payload.resetConversation)
-        response_stream = iter(incluir_recordatorio_contacto(stream_chat_response(question, detail_level, history), question_number))
-        first_delta = next(response_stream)
-    except Exception as exc:
-        GATE.release(ip_address)
-        message, status = public_api_error(exc)
-        LOGGER.warning("chat_start_failed type=%s", type(exc).__name__)
-        raise HTTPException(int(status), message) from exc
+    ticket = GATE.reserve(ip_address)
 
     def event_stream() -> Iterator[bytes]:
-        answer_parts = [first_delta]
         completed = False
+        revision = -1
+        answer_parts: list[str] = []
         try:
-            yield ndjson_event({"type": "delta", "text": first_delta})
+            if ticket.position:
+                yield ndjson_event(
+                    {
+                        "type": "queued",
+                        "message": f"Tu consulta está en cola (posición {ticket.position}).",
+                    }
+                )
+            GATE.wait_for_turn(ticket)
+            yield ndjson_event({"type": "status", "message": "El asistente está preparando una respuesta."})
+            history, question_number, revision = SESSIONS.begin(session_id, payload.resetConversation)
+            response_stream = incluir_recordatorio_contacto(
+                stream_chat_response(question, detail_level, history),
+                question_number,
+            )
             for delta in response_stream:
                 answer_parts.append(delta)
                 yield ndjson_event({"type": "delta", "text": delta})
@@ -382,13 +421,16 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
             yield ndjson_event({"type": "done"})
         except (BrokenPipeError, ConnectionResetError):
             return
+        except HTTPException as exc:
+            message = str(exc.detail)
+            yield ndjson_event({"type": "error", "message": message})
         except Exception as exc:
             LOGGER.warning("chat_stream_failed type=%s", type(exc).__name__)
             yield ndjson_event({"type": "error", "message": public_api_error(exc)[0]})
         finally:
-            if completed:
+            if completed and revision >= 0:
                 SESSIONS.complete(session_id, revision, question, "".join(answer_parts))
-            GATE.release(ip_address)
+            GATE.release(ticket)
 
     response = StreamingResponse(event_stream(), media_type="application/x-ndjson; charset=utf-8")
     response.headers["X-Accel-Buffering"] = "no"
