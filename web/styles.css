@@ -1253,7 +1253,7 @@ textarea::placeholder {
   z-index: 20;
   max-width: min(420px, calc(100vw - 32px));
   padding: 16px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
   box-shadow: 0 14px 40px rgba(15, 23, 42, 0.18);
@@ -1275,19 +1275,29 @@ textarea::placeholder {
 .analytics-consent button {
   min-height: 36px;
   padding: 0 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 7px;
   background: transparent;
-  color: var(--ink);
+  color: var(--text);
   font: inherit;
   font-weight: 650;
   cursor: pointer;
 }
 
 .analytics-consent button[data-analytics-choice="accept"] {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: var(--brand);
+  background: var(--brand);
   color: #fff;
+}
+
+.analytics-consent button[data-analytics-choice="accept"]:hover {
+  border-color: var(--brand-hover);
+  background: var(--brand-hover);
+}
+
+.analytics-consent button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--focus) 45%, transparent);
+  outline-offset: 2px;
 }
 
 @media (max-width: 560px) {
