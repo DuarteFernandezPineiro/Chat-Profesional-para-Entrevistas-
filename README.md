@@ -57,7 +57,7 @@ Configura estos valores como secretos o variables de entorno en App Platform:
 | `OPENAI_TIMEOUT_SECONDS` | `90`; tiempo máximo de espera de red por operación. |
 | `OPENAI_MAX_RETRIES` | `2`; reintentos del SDK para errores transitorios. |
 | `OPENAI_REASONING_EFFORT` | `low`; reduce latencia y consumo en esta carga conversacional. |
-| `OPENAI_GENERATION_ATTEMPTS` | `2`; permite regenerar antes de responder si la salida queda incompleta. |
+| `OPENAI_GENERATION_ATTEMPTS` | `2`; permite continuar automáticamente si la salida queda incompleta. |
 | `OPENAI_PLANNING_MAX_OUTPUT_TOKENS` | `2000`; presupuesto independiente para seleccionar fuentes. |
 | `CHAT_COOKIE_SECURE` | `true` |
 | `CHAT_ENABLE_HSTS` | `true` |
@@ -102,7 +102,8 @@ respeta la preferencia Do Not Track del navegador.
 - El contexto se limita a las últimas cuatro interacciones y los documentos extensos
   se reducen a sus secciones más relevantes antes de enviarlos al modelo.
 - La selección de fuentes es obligatoria, los proyectos se recuperan desde un índice
-  estructurado y una respuesta incompleta se reintenta antes de llegar al navegador.
+  estructurado y la respuesta se transmite incrementalmente en los tres niveles de
+  detalle. Si queda incompleta, se continúa sin descartar lo ya enviado.
 - La salida pública elimina números de teléfono, identificadores internos y texto de
   planificación como defensa adicional a las instrucciones del modelo.
 - Los recursos estáticos se sirven con caché larga; las API y páginas no se almacenan

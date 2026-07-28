@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -68,7 +69,21 @@ CONTACT_REMINDER = (
 OUTPUT_TOKEN_LIMITS = {"breve": 1_200, "normal": 2_600, "detallado": 5_200}
 PLANNING_TOKEN_LIMIT = int(os.getenv("OPENAI_PLANNING_MAX_OUTPUT_TOKENS", "2_000"))
 MAX_GENERATION_ATTEMPTS = int(os.getenv("OPENAI_GENERATION_ATTEMPTS", "2"))
-STREAM_CHUNK_CHARS = 256
+STREAM_SANITIZER_TAIL_CHARS = 192
+STREAM_SENSITIVE_PATTERNS = (
+    chat_core.PUBLIC_TEL_LINK_PATTERN,
+    chat_core.PUBLIC_PHONE_PATTERN,
+    re.compile(r"\bproject_[a-z0-9_]+\b", flags=re.IGNORECASE),
+    re.compile(
+        r"\b(?:leer_documento|buscar_proyectos|leer_proyecto)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(r"(?:err){2,}", flags=re.IGNORECASE),
+    re.compile(
+        r"[^\n]*(?:Could I retrieve|Need tool likely|herramienta\s+project)[^\n]*",
+        flags=re.IGNORECASE,
+    ),
+)
 
 MODEL = os.getenv("OPENAI_MODEL", chat_core.DEFAULT_MODEL)
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90"))
@@ -98,6 +113,63 @@ class IncompleteResponseError(GenerationError):
             response_id=response_id,
         )
         self.reason = reason
+
+
+@dataclass
+class StreamingAttemptState:
+    """Estado observable de un intento de generación incremental."""
+
+    raw_parts: list[str] = field(default_factory=list)
+    terminal_response: Any = None
+    terminal_type: str = ""
+    emitted_chars: int = 0
+
+    @property
+    def raw_text(self) -> str:
+        return "".join(self.raw_parts)
+
+
+class PublicStreamingSanitizer:
+    """Sanea deltas sin dividir datos sensibles entre emisiones."""
+
+    def __init__(self, tail_chars: int = STREAM_SANITIZER_TAIL_CHARS) -> None:
+        self.tail_chars = max(64, tail_chars)
+        self.buffer = ""
+        self.has_emitted = False
+
+    def _clean(self, raw_text: str, *, final: bool = False) -> str:
+        cleaned = chat_core.sanitizar_texto_publico(raw_text)
+        if not self.has_emitted:
+            cleaned = cleaned.lstrip()
+        if final:
+            cleaned = cleaned.rstrip()
+        if cleaned:
+            self.has_emitted = True
+        return cleaned
+
+    def push(self, delta: str) -> str:
+        self.buffer += delta
+        proposed_cut = len(self.buffer) - self.tail_chars
+        if proposed_cut <= 0:
+            return ""
+
+        # Un patrón sensible que cruce el corte permanece completo en el búfer
+        # hasta que pueda sustituirse sin publicar ninguna de sus partes.
+        for pattern in STREAM_SENSITIVE_PATTERNS:
+            for match in pattern.finditer(self.buffer):
+                if match.start() < proposed_cut < match.end():
+                    proposed_cut = match.start()
+        if proposed_cut <= 0:
+            return ""
+
+        raw_prefix = self.buffer[:proposed_cut]
+        self.buffer = self.buffer[proposed_cut:]
+        return self._clean(raw_prefix)
+
+    def flush(self) -> str:
+        raw_remainder = self.buffer
+        self.buffer = ""
+        return self._clean(raw_remainder, final=True)
 
 
 def is_blocked_local_proxy_configured() -> bool:
@@ -688,15 +760,14 @@ def _append_tool_results(
     return trace
 
 
-def _collect_streamed_response(
+def _stream_response_attempt(
     input_items: list[Any],
     instructions: str,
     max_output_tokens: int,
-) -> str:
-    """Acumula una respuesta del proveedor y solo la publica si termina correctamente."""
-    terminal_response = None
-    terminal_type = ""
-    streamed_text: list[str] = []
+    state: StreamingAttemptState,
+    sanitizer: PublicStreamingSanitizer,
+) -> Iterator[str]:
+    """Transmite un intento mientras conserva un margen para sanear límites."""
     with CLIENT.responses.create(
         model=MODEL,
         instructions=instructions,
@@ -710,71 +781,99 @@ def _collect_streamed_response(
             if event_type == "response.output_text.delta":
                 delta = getattr(event, "delta", "")
                 if isinstance(delta, str) and delta:
-                    streamed_text.append(delta)
+                    state.raw_parts.append(delta)
+                    public_delta = sanitizer.push(delta)
+                    if public_delta:
+                        state.emitted_chars += len(public_delta)
+                        yield public_delta
             elif event_type in {
                 "response.completed",
                 "response.incomplete",
                 "response.failed",
             }:
-                terminal_response = event.response
-                terminal_type = event_type
+                state.terminal_response = event.response
+                state.terminal_type = event_type
             elif event_type == "error":
                 raise GenerationError(
                     getattr(event, "code", None) or "provider_stream_error",
                     getattr(event, "message", "Error durante la respuesta en streaming."),
                 )
 
-    if terminal_response is None:
+    if state.terminal_response is None:
         raise GenerationError(
             "missing_terminal_event",
             "El proveedor cerró la respuesta sin un estado terminal.",
         )
-    validate_completed_response(terminal_response, "generation")
-    if terminal_type != "response.completed":
+    validate_completed_response(state.terminal_response, "generation")
+    if state.terminal_type != "response.completed":
         raise GenerationError(
-            f"unexpected_{terminal_type}",
+            f"unexpected_{state.terminal_type}",
             "La respuesta no terminó con el evento esperado.",
-            response_id=response_identifier(terminal_response),
+            response_id=response_identifier(state.terminal_response),
         )
 
-    response_text = getattr(terminal_response, "output_text", "") or "".join(streamed_text)
-    sanitized = chat_core.sanitizar_texto_publico(response_text).strip()
-    if not sanitized:
-        raise GenerationError(
-            "empty_response",
-            "El proveedor devolvió una respuesta vacía.",
-            response_id=response_identifier(terminal_response),
-        )
-    return sanitized
 
-
-def _generate_complete_response(
+def _generate_streaming_response(
     input_items: list[Any],
     instructions: str,
     detail_level: str,
-) -> str:
-    """Reintenta respuestas truncadas o transitorias antes de exponer contenido."""
+) -> Iterator[str]:
+    """Transmite deltas y continúa automáticamente una salida truncada."""
     base_limit = output_token_limit(detail_level)
     last_error: Exception | None = None
     attempts = max(1, MAX_GENERATION_ATTEMPTS)
+    accumulated_raw = ""
+    sanitizer = PublicStreamingSanitizer()
+    total_emitted_chars = 0
     for attempt in range(attempts):
+        attempt_input = list(input_items)
         retry_instructions = instructions
         if attempt:
             retry_instructions += (
-                "\n\n## Completion retry\n"
-                "The previous generation did not reach a completed terminal state. "
-                "Answer the same user request completely, preserve the strongest "
-                "evidence and respect the word range strictly."
+                "\n\n## Streaming continuation\n"
+                "Continue exactly where the previous output stopped. Return only "
+                "the missing continuation: do not repeat its beginning, preface it "
+                "or mention that a retry occurred. Complete the answer coherently."
             )
+            if accumulated_raw:
+                attempt_input.extend(
+                    [
+                        {"role": "assistant", "content": accumulated_raw},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Continúa exactamente desde el último carácter de la "
+                                "respuesta anterior. Devuelve únicamente el texto que falta."
+                            ),
+                        },
+                    ]
+                )
+        state = StreamingAttemptState()
         try:
-            return _collect_streamed_response(
-                input_items,
+            for public_delta in _stream_response_attempt(
+                attempt_input,
                 retry_instructions,
                 base_limit * (2**attempt),
-            )
+                state,
+                sanitizer,
+            ):
+                total_emitted_chars += len(public_delta)
+                yield public_delta
+            remainder = sanitizer.flush()
+            if remainder:
+                total_emitted_chars += len(remainder)
+                yield remainder
+            if not total_emitted_chars:
+                raise GenerationError(
+                    "empty_response",
+                    "El proveedor devolvió una respuesta vacía.",
+                    response_id=response_identifier(state.terminal_response),
+                )
+            return
         except AuthenticationError:
             raise
         except (APIConnectionError, APIStatusError, RateLimitError, GenerationError) as exc:
+            accumulated_raw += state.raw_text
             last_error = exc
             if attempt + 1 >= attempts:
                 raise
@@ -792,7 +891,7 @@ def stream_chat_response(
     detail_level: str,
     history: list[dict[str, str]] | None = None,
 ) -> Iterator[str]:
-    """Recupera evidencia y transmite únicamente una respuesta final validada."""
+    """Recupera evidencia y transmite la respuesta de forma incremental."""
     if CLIENT is None:
         raise RuntimeError("El cliente de OpenAI no está configurado.")
 
@@ -801,15 +900,20 @@ def stream_chat_response(
     planning_response = _plan_tool_calls(input_items, instructions)
     input_items.extend(planning_response.output)
     trace = _append_tool_results(input_items, planning_response, question)
-    answer = _generate_complete_response(input_items, instructions, detail_level)
+    answer_chars = 0
+    for public_delta in _generate_streaming_response(
+        input_items,
+        instructions,
+        detail_level,
+    ):
+        answer_chars += len(public_delta)
+        yield public_delta
 
     LOGGER.info(
         "chat_generation_completed documents=%s answer_chars=%s",
         len(trace.accesses),
-        len(answer),
+        answer_chars,
     )
-    for start in range(0, len(answer), STREAM_CHUNK_CHARS):
-        yield answer[start : start + STREAM_CHUNK_CHARS]
 
 
 @app.get("/")

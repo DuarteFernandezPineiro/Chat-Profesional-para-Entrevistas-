@@ -209,7 +209,7 @@ class WebChatAppTests(unittest.TestCase):
             with self.assertRaises(web_chat_app.GenerationError):
                 list(web_chat_app.stream_chat_response("Pregunta", "breve", []))
 
-    def test_respuesta_incompleta_se_reintenta_antes_de_publicarse(self):
+    def test_respuesta_incompleta_continua_sin_descartar_lo_transmitido(self):
         incomplete_response = SimpleNamespace(
             status="incomplete",
             output_text="Respuesta cortada",
@@ -218,7 +218,7 @@ class WebChatAppTests(unittest.TestCase):
         )
         complete_response = SimpleNamespace(
             status="completed",
-            output_text="Respuesta completa sin teléfono.",
+            output_text=" y ahora termina.",
             incomplete_details=None,
             id="resp_complete",
         )
@@ -232,7 +232,7 @@ class WebChatAppTests(unittest.TestCase):
             [
                 SimpleNamespace(
                     type="response.output_text.delta",
-                    delta="Respuesta completa sin teléfono.",
+                    delta=" y ahora termina.",
                 ),
                 SimpleNamespace(type="response.completed", response=complete_response),
             ]
@@ -247,18 +247,144 @@ class WebChatAppTests(unittest.TestCase):
             ),
             patch.object(web_chat_app, "MAX_GENERATION_ATTEMPTS", 2),
         ):
-            answer = web_chat_app._generate_complete_response(
-                [{"role": "user", "content": "Pregunta"}],
-                "Instrucciones",
-                "breve",
+            answer = "".join(
+                web_chat_app._generate_streaming_response(
+                    [{"role": "user", "content": "Pregunta"}],
+                    "Instrucciones",
+                    "breve",
+                )
             )
 
-        self.assertEqual(answer, "Respuesta completa sin teléfono.")
+        self.assertEqual(answer, "Respuesta cortada y ahora termina.")
         self.assertEqual(len(fake_responses.calls), 2)
         self.assertGreater(
             fake_responses.calls[1]["max_output_tokens"],
             fake_responses.calls[0]["max_output_tokens"],
         )
+        retry_input = fake_responses.calls[1]["input"]
+        self.assertEqual(retry_input[-2]["role"], "assistant")
+        self.assertEqual(retry_input[-2]["content"], "Respuesta cortada")
+        self.assertEqual(retry_input[-1]["role"], "user")
+
+    def test_los_tres_modos_emiten_antes_del_evento_completed(self):
+        for detail_level in ("breve", "normal", "detallado"):
+            with self.subTest(detail_level=detail_level):
+                completed_response = SimpleNamespace(
+                    status="completed",
+                    output_text="A" * 400,
+                    incomplete_details=None,
+                    id=f"resp_{detail_level}",
+                )
+
+                class TrackingEvents:
+                    def __init__(self):
+                        self.completed_seen = False
+
+                    def __iter__(self):
+                        yield SimpleNamespace(
+                            type="response.output_text.delta",
+                            delta="A" * 400,
+                        )
+                        self.completed_seen = True
+                        yield SimpleNamespace(
+                            type="response.completed",
+                            response=completed_response,
+                        )
+
+                events = TrackingEvents()
+                fake_responses = FakeResponses(FakeStream(events))
+                with patch.object(
+                    web_chat_app,
+                    "CLIENT",
+                    SimpleNamespace(responses=fake_responses),
+                ):
+                    stream = web_chat_app._generate_streaming_response(
+                        [{"role": "user", "content": "Pregunta"}],
+                        "Instrucciones",
+                        detail_level,
+                    )
+                    first_delta = next(stream)
+                    self.assertFalse(events.completed_seen)
+                    answer = first_delta + "".join(stream)
+
+                self.assertEqual(answer, "A" * 400)
+                self.assertTrue(events.completed_seen)
+
+    def test_saneado_streaming_bloquea_un_telefono_dividido_en_deltas(self):
+        sanitizer = web_chat_app.PublicStreamingSanitizer(tail_chars=64)
+        public_text = "".join(
+            [
+                sanitizer.push("A" * 80 + " Llama al +34 635 "),
+                sanitizer.push("763 "),
+                sanitizer.push("949 para hablar."),
+                sanitizer.flush(),
+            ]
+        )
+
+        self.assertNotIn("635", public_text)
+        self.assertNotIn("763 949", public_text)
+        self.assertIn("dato de contacto privado omitido", public_text)
+
+    def test_saneado_conserva_el_limite_entre_dos_intentos(self):
+        incomplete_text = "A" * 220 + " Llama al +34 635 "
+        incomplete_response = SimpleNamespace(
+            status="incomplete",
+            output_text=incomplete_text,
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            id="resp_sensitive_incomplete",
+        )
+        complete_response = SimpleNamespace(
+            status="completed",
+            output_text="763 949 para hablar.",
+            incomplete_details=None,
+            id="resp_sensitive_complete",
+        )
+        fake_responses = FakeResponses(
+            FakeStream(
+                [
+                    SimpleNamespace(
+                        type="response.output_text.delta",
+                        delta=incomplete_text,
+                    ),
+                    SimpleNamespace(
+                        type="response.incomplete",
+                        response=incomplete_response,
+                    ),
+                ]
+            ),
+            FakeStream(
+                [
+                    SimpleNamespace(
+                        type="response.output_text.delta",
+                        delta="763 949 para hablar.",
+                    ),
+                    SimpleNamespace(
+                        type="response.completed",
+                        response=complete_response,
+                    ),
+                ]
+            ),
+        )
+
+        with (
+            patch.object(
+                web_chat_app,
+                "CLIENT",
+                SimpleNamespace(responses=fake_responses),
+            ),
+            patch.object(web_chat_app, "MAX_GENERATION_ATTEMPTS", 2),
+        ):
+            answer = "".join(
+                web_chat_app._generate_streaming_response(
+                    [{"role": "user", "content": "Pregunta"}],
+                    "Instrucciones",
+                    "breve",
+                )
+            )
+
+        self.assertNotIn("635", answer)
+        self.assertNotIn("763 949", answer)
+        self.assertIn("dato de contacto privado omitido", answer)
 
     def test_error_de_stream_incluye_referencia_sin_filtrar_detalles(self):
         def failing_stream(_question, _detail_level, _history):
