@@ -59,8 +59,12 @@ CONTACT_REMINDER = (
     "## Contacto\n\n"
     "Puedes contactar a Duarte a través de "
     "[LinkedIn](https://www.linkedin.com/in/dfernandezpineiro), "
+    "[GitHub](https://github.com/DuarteFernandezPineiro), "
     "[correo](mailto:dfernandezpineiro@gmail.com) o "
     "[635 763 949](tel:+34635763949)."
+    "\n\nTambién puedes probar su "
+    "[proyecto de análisis de Bitcoin]"
+    "(https://bitcoin-decision-chat-674899194994.europe-southwest1.run.app)."
 )
 OUTPUT_TOKEN_LIMITS = {"breve": 650, "normal": 1_200, "detallado": 2_400}
 

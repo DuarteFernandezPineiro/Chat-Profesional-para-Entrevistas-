@@ -44,6 +44,8 @@ class WebChatAppTests(unittest.TestCase):
             self.assertEqual(web_chat_app.mostrar_recordatorio_contacto(question_number), expected)
 
         self.assertIn("LinkedIn", web_chat_app.CONTACT_REMINDER)
+        self.assertIn("github.com/DuarteFernandezPineiro", web_chat_app.CONTACT_REMINDER)
+        self.assertIn("bitcoin-decision-chat", web_chat_app.CONTACT_REMINDER)
         self.assertIn("mailto:", web_chat_app.CONTACT_REMINDER)
         self.assertIn("tel:", web_chat_app.CONTACT_REMINDER)
 

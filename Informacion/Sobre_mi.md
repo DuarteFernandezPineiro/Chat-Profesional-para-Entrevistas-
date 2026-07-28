@@ -38,5 +38,5 @@ Además de la tecnología y la inteligencia artificial, el deporte ocupa un pape
 - **Correo electrónico:** [dfernandezpineiro@gmail.com](mailto:dfernandezpineiro@gmail.com)
 - **Teléfono:** [635 763 949](tel:+34635763949)
 - [LinkedIn — Duarte Fernández Piñeiro](https://www.linkedin.com/in/dfernandezpineiro)
-- [GitHub — tostadito33](https://github.com/tostadito33)
-- [Proyecto de análisis de sentimiento sobre Bitcoin](https://bitcoinapp.francisnet.xyz/)
+- [GitHub — DuarteFernandezPineiro](https://github.com/DuarteFernandezPineiro)
+- [Proyecto de análisis de sentimiento sobre Bitcoin](https://bitcoin-decision-chat-674899194994.europe-southwest1.run.app)
