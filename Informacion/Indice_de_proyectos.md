@@ -817,6 +817,56 @@ projects:
       - No atribuir línea por línea todos los componentes.
       - La ruta advanced declarada en el summary no existe en esta carpeta.
 
+  - project_id: project_bitcoin_sentiment_decision_chat
+    canonical_name: Bitcoin Decision Chat
+    short_name: Análisis de sentimiento de Bitcoin
+    aliases:
+      - clasificador de sentimiento aplicado a Bitcoin
+      - proyecto de análisis de Bitcoin
+      - asistente de decisión sobre Bitcoin
+      - Bitcoin sentiment explorer
+    project_type: personal
+    status: deployed_publicly
+    featured: true
+    interview_priority: 3
+    areas: [applied_artificial_intelligence, natural_language_processing, software_engineering]
+    tags: [bitcoin, análisis de sentimiento, clasificación, aprendizaje automático, asistente explicativo, despliegue web]
+    primary_technology_ids: []
+    secondary_technology_ids: []
+    role:
+      collaboration_type: individual
+      title: designer_developer_and_deployer
+      context: personal_public_project
+    personal_contributions:
+      - Desarrollo de una aplicación web experimental que analiza el sentimiento de mensajes en inglés relacionados con Bitcoin.
+      - Integración de dos clasificadores de aprendizaje automático y una explicación final en lenguaje claro.
+      - Diseño de una interfaz pública con escenarios de mercado reproducibles y advertencias explícitas sobre el alcance del resultado.
+    team_contributions: []
+    provided_components: []
+    not_personally_implemented: []
+    short_pitch: Aplicación web pública que combina dos clasificadores de aprendizaje automático para analizar el contexto de un mensaje en inglés sobre Bitcoin y ofrecer una explicación educativa de su orientación general.
+    objective: Hacer comprensible y demostrable el análisis de sentimiento aplicado a mensajes sobre Bitcoin mediante una experiencia web interactiva.
+    problem_solved: Convierte la salida de clasificadores de sentimiento en una explicación accesible, manteniendo una separación explícita entre análisis experimental y asesoramiento financiero.
+    verifiable_results:
+      - Aplicación desplegada públicamente y accesible desde navegador.
+      - Análisis conjunto mediante dos clasificadores de aprendizaje automático.
+      - Interfaz con cuatro escenarios de ejemplo y entrada libre de mensajes en inglés.
+      - Aviso visible de que la herramienta es experimental, no ofrece asesoramiento financiero y no predice el precio de Bitcoin.
+    competency_ids: [skill_diseno_modular, skill_frontend_web, skill_despliegue_cloud]
+    summary_path: null
+    advanced_path: null
+    repository: null
+    demo: https://bitcoin-decision-chat-674899194994.europe-southwest1.run.app/
+    rag_enabled: false
+    retrieval_metadata:
+      project_id: project_bitcoin_sentiment_decision_chat
+      allowed_document_types: [public_deployment]
+    evidence_strength: verified_public_deployment
+    known_limitations:
+      - Analiza un único mensaje en inglés.
+      - Es una herramienta educativa y experimental, no asesoramiento financiero.
+      - No predice precios ni resultados de inversión.
+
   - project_id: project_asistente_profesional_web
     canonical_name: Asistente profesional web para entrevistas
     short_name: Asistente profesional web

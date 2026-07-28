@@ -2,11 +2,36 @@ import json
 import unittest
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 import web_chat_app
+
+
+class FakeStream:
+    def __init__(self, events):
+        self.events = events
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def __iter__(self):
+        return iter(self.events)
+
+
+class FakeResponses:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.responses.pop(0)
 
 
 class WebChatAppTests(unittest.TestCase):
@@ -47,7 +72,10 @@ class WebChatAppTests(unittest.TestCase):
         self.assertIn("github.com/DuarteFernandezPineiro", web_chat_app.CONTACT_REMINDER)
         self.assertIn("bitcoin-decision-chat", web_chat_app.CONTACT_REMINDER)
         self.assertIn("mailto:", web_chat_app.CONTACT_REMINDER)
-        self.assertIn("tel:", web_chat_app.CONTACT_REMINDER)
+        self.assertNotIn("tel:", web_chat_app.CONTACT_REMINDER)
+        self.assertIsNone(
+            web_chat_app.chat_core.PUBLIC_PHONE_PATTERN.search(web_chat_app.CONTACT_REMINDER)
+        )
 
     def test_recordatorio_se_anade_al_final_en_los_tres_niveles(self):
         for detail_level in ("breve", "normal", "detallado"):
@@ -124,6 +152,145 @@ class WebChatAppTests(unittest.TestCase):
     def test_cliente_activa_la_configuracion_de_analitica_al_cargar(self):
         app_script = (Path(web_chat_app.WEB_ROOT) / "app.js").read_text(encoding="utf-8")
         self.assertIn("void configureAnalytics();", app_script)
+
+    def test_cliente_conserva_una_respuesta_parcial_si_la_red_falla(self):
+        app_script = (Path(web_chat_app.WEB_ROOT) / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function preservePartialResponse(", app_script)
+        self.assertIn("Respuesta parcial conservada.", app_script)
+        self.assertIn("if (answer.trim())", app_script)
+
+    def test_planificacion_obliga_a_usar_herramientas(self):
+        tool_call = SimpleNamespace(
+            type="function_call",
+            name="buscar_proyectos",
+            arguments='{"query":"proyectos","limit":3}',
+            call_id="call_1",
+        )
+        response = SimpleNamespace(
+            status="completed",
+            output=[tool_call],
+            output_text="",
+            id="resp_plan",
+        )
+        fake_responses = FakeResponses(response)
+
+        with patch.object(
+            web_chat_app,
+            "CLIENT",
+            SimpleNamespace(responses=fake_responses),
+        ):
+            planned = web_chat_app._plan_tool_calls(
+                [{"role": "user", "content": "Proyectos"}],
+                "Instrucciones",
+            )
+
+        self.assertIs(planned, response)
+        self.assertEqual(fake_responses.calls[0]["tool_choice"], "required")
+        self.assertTrue(fake_responses.calls[0]["parallel_tool_calls"])
+
+    def test_texto_de_planificacion_nunca_se_publica(self):
+        response = SimpleNamespace(
+            status="completed",
+            output=[],
+            output_text="INTERNAL_PLANNING_MARKER",
+            id="resp_plan",
+        )
+        fake_responses = FakeResponses(response)
+
+        with (
+            patch.object(
+                web_chat_app,
+                "CLIENT",
+                SimpleNamespace(responses=fake_responses),
+            ),
+            patch.object(web_chat_app, "MAX_GENERATION_ATTEMPTS", 1),
+        ):
+            with self.assertRaises(web_chat_app.GenerationError):
+                list(web_chat_app.stream_chat_response("Pregunta", "breve", []))
+
+    def test_respuesta_incompleta_se_reintenta_antes_de_publicarse(self):
+        incomplete_response = SimpleNamespace(
+            status="incomplete",
+            output_text="Respuesta cortada",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            id="resp_incomplete",
+        )
+        complete_response = SimpleNamespace(
+            status="completed",
+            output_text="Respuesta completa sin teléfono.",
+            incomplete_details=None,
+            id="resp_complete",
+        )
+        first_stream = FakeStream(
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="Respuesta cortada"),
+                SimpleNamespace(type="response.incomplete", response=incomplete_response),
+            ]
+        )
+        second_stream = FakeStream(
+            [
+                SimpleNamespace(
+                    type="response.output_text.delta",
+                    delta="Respuesta completa sin teléfono.",
+                ),
+                SimpleNamespace(type="response.completed", response=complete_response),
+            ]
+        )
+        fake_responses = FakeResponses(first_stream, second_stream)
+
+        with (
+            patch.object(
+                web_chat_app,
+                "CLIENT",
+                SimpleNamespace(responses=fake_responses),
+            ),
+            patch.object(web_chat_app, "MAX_GENERATION_ATTEMPTS", 2),
+        ):
+            answer = web_chat_app._generate_complete_response(
+                [{"role": "user", "content": "Pregunta"}],
+                "Instrucciones",
+                "breve",
+            )
+
+        self.assertEqual(answer, "Respuesta completa sin teléfono.")
+        self.assertEqual(len(fake_responses.calls), 2)
+        self.assertGreater(
+            fake_responses.calls[1]["max_output_tokens"],
+            fake_responses.calls[0]["max_output_tokens"],
+        )
+
+    def test_error_de_stream_incluye_referencia_sin_filtrar_detalles(self):
+        def failing_stream(_question, _detail_level, _history):
+            raise web_chat_app.GenerationError(
+                "provider_stream_error",
+                "detalle interno que no debe mostrarse",
+                response_id="resp_private",
+            )
+            yield
+
+        with (
+            patch.object(web_chat_app, "CLIENT", object()),
+            patch.object(web_chat_app, "SESSIONS", web_chat_app.ConversationStore()),
+            patch.object(web_chat_app, "GATE", web_chat_app.RequestGate()),
+            patch.object(web_chat_app, "stream_chat_response", failing_stream),
+            TestClient(web_chat_app.app, base_url="http://localhost") as client,
+        ):
+            response = client.post(
+                "/api/chat",
+                json={
+                    "message": "Pregunta",
+                    "detailLevel": "breve",
+                    "resetConversation": True,
+                },
+            )
+
+        events = [json.loads(line) for line in response.text.splitlines()]
+        error = next(event for event in events if event["type"] == "error")
+        self.assertEqual(error["requestId"], response.headers["x-request-id"])
+        self.assertIn("Referencia:", error["message"])
+        self.assertNotIn("detalle interno", error["message"])
+        self.assertNotIn("resp_private", error["message"])
 
     def test_api_mantiene_contexto_y_recordatorio_con_los_tres_niveles(self):
         def fake_stream(question, detail_level, history):

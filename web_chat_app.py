@@ -60,18 +60,44 @@ CONTACT_REMINDER = (
     "Puedes contactar a Duarte a través de "
     "[LinkedIn](https://www.linkedin.com/in/dfernandezpineiro), "
     "[GitHub](https://github.com/DuarteFernandezPineiro), "
-    "[correo](mailto:dfernandezpineiro@gmail.com) o "
-    "[635 763 949](tel:+34635763949)."
+    "o [correo](mailto:dfernandezpineiro@gmail.com)."
     "\n\nTambién puedes probar su "
     "[proyecto de análisis de Bitcoin]"
     "(https://bitcoin-decision-chat-674899194994.europe-southwest1.run.app)."
 )
-OUTPUT_TOKEN_LIMITS = {"breve": 650, "normal": 1_200, "detallado": 2_400}
+OUTPUT_TOKEN_LIMITS = {"breve": 1_200, "normal": 2_600, "detallado": 5_200}
+PLANNING_TOKEN_LIMIT = int(os.getenv("OPENAI_PLANNING_MAX_OUTPUT_TOKENS", "2_000"))
+MAX_GENERATION_ATTEMPTS = int(os.getenv("OPENAI_GENERATION_ATTEMPTS", "2"))
+STREAM_CHUNK_CHARS = 256
 
 MODEL = os.getenv("OPENAI_MODEL", chat_core.DEFAULT_MODEL)
-OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "low").strip().lower()
 CATALOG = chat_core.cargar_catalogo()
+PROJECTS = chat_core.cargar_indice_proyectos()
 LOGGER = logging.getLogger("duarte_chat")
+
+
+class GenerationError(RuntimeError):
+    """Fallo de generación clasificable sin exponer información interna."""
+
+    def __init__(self, code: str, message: str, *, response_id: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.response_id = response_id
+
+
+class IncompleteResponseError(GenerationError):
+    """La API terminó correctamente el transporte, pero truncó la respuesta."""
+
+    def __init__(self, reason: str, *, response_id: str | None = None) -> None:
+        super().__init__(
+            "response_incomplete",
+            f"La respuesta quedó incompleta: {reason}",
+            response_id=response_id,
+        )
+        self.reason = reason
 
 
 def is_blocked_local_proxy_configured() -> bool:
@@ -85,7 +111,10 @@ def create_openai_client() -> OpenAI | None:
     """Crea un cliente de backend con un timeout y reintentos acotados."""
     if not os.getenv("OPENAI_API_KEY"):
         return None
-    options: dict[str, Any] = {"timeout": OPENAI_TIMEOUT_SECONDS, "max_retries": 0}
+    options: dict[str, Any] = {
+        "timeout": OPENAI_TIMEOUT_SECONDS,
+        "max_retries": max(0, OPENAI_MAX_RETRIES),
+    }
     if is_blocked_local_proxy_configured():
         options["http_client"] = DefaultHttpxClient(trust_env=False)
     return OpenAI(**options)
@@ -289,6 +318,7 @@ class RequestSizeLimitMiddleware:
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         request_id = secrets.token_hex(8)
+        request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -341,6 +371,45 @@ def output_token_limit(detail_level: str) -> int:
     return int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", str(OUTPUT_TOKEN_LIMITS[detail_level])))
 
 
+def openai_reasoning_options() -> dict[str, object]:
+    """Configura razonamiento acotado para reducir latencia y truncados."""
+    if OPENAI_REASONING_EFFORT in {"none", "low", "medium", "high", "xhigh", "max"}:
+        return {"reasoning": {"effort": OPENAI_REASONING_EFFORT}}
+    return {}
+
+
+def response_identifier(response: Any) -> str | None:
+    """Obtiene un identificador de respuesta sin asumir una versión concreta del SDK."""
+    value = getattr(response, "_request_id", None) or getattr(response, "id", None)
+    return value if isinstance(value, str) else None
+
+
+def response_incomplete_reason(response: Any) -> str:
+    details = getattr(response, "incomplete_details", None)
+    reason = getattr(details, "reason", None)
+    return reason if isinstance(reason, str) and reason else "unknown"
+
+
+def validate_completed_response(response: Any, stage: str) -> None:
+    """Valida estados terminales no transmitidos por excepciones HTTP."""
+    status = getattr(response, "status", None)
+    response_id = response_identifier(response)
+    if status == "completed":
+        return
+    if status == "incomplete":
+        raise IncompleteResponseError(
+            response_incomplete_reason(response),
+            response_id=response_id,
+        )
+    error = getattr(response, "error", None)
+    error_code = getattr(error, "code", None)
+    raise GenerationError(
+        f"{stage}_{status or 'unknown'}",
+        f"La etapa {stage} no se completó ({error_code or status or 'unknown'}).",
+        response_id=response_id,
+    )
+
+
 def mostrar_recordatorio_contacto(question_number: int) -> bool:
     return question_number in CONTACT_REMINDER_QUESTION_NUMBERS
 
@@ -368,6 +437,10 @@ def public_api_error(exc: Exception) -> tuple[str, HTTPStatus]:
         return "No se pudo establecer conexión con el servicio de respuestas.", HTTPStatus.SERVICE_UNAVAILABLE
     if isinstance(exc, APIStatusError):
         return "El servicio de respuestas no pudo completar la consulta.", HTTPStatus.BAD_GATEWAY
+    if isinstance(exc, IncompleteResponseError):
+        return "La respuesta se interrumpió antes de terminar. Vuelve a intentarlo.", HTTPStatus.BAD_GATEWAY
+    if isinstance(exc, GenerationError):
+        return "El servicio no pudo completar esta respuesta.", HTTPStatus.BAD_GATEWAY
     return "No se pudo completar la respuesta. Vuelve a intentarlo.", HTTPStatus.INTERNAL_SERVER_ERROR
 
 
@@ -418,6 +491,7 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     ip_address = client_ip(request)
+    request_id = getattr(request.state, "request_id", secrets.token_hex(8))
     session_id, _ = SESSIONS.get_or_create(request.cookies.get(SESSION_COOKIE))
     ticket = GATE.reserve(ip_address)
 
@@ -439,7 +513,13 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
                 )
             GATE.wait_for_turn(ticket)
             generation_started_at = time.monotonic()
-            yield ndjson_event({"type": "status", "message": "El asistente está preparando una respuesta."})
+            yield ndjson_event(
+                {
+                    "type": "status",
+                    "message": "El asistente está preparando una respuesta.",
+                    "requestId": request_id,
+                }
+            )
             history, question_number, revision = SESSIONS.begin(session_id, payload.resetConversation)
             response_stream = incluir_recordatorio_contacto(
                 stream_chat_response(question, detail_level, history),
@@ -463,6 +543,7 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
                     ),
                     "generationDurationMs": round((finished_at - generation_started_at) * 1_000),
                     "answerCharacters": sum(len(part) for part in answer_parts),
+                    "requestId": request_id,
                 }
             )
             yield ndjson_event({"type": "done"})
@@ -470,10 +551,25 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
             return
         except HTTPException as exc:
             message = str(exc.detail)
-            yield ndjson_event({"type": "error", "message": message})
+            yield ndjson_event({"type": "error", "message": message, "requestId": request_id})
         except Exception as exc:
-            LOGGER.warning("chat_stream_failed type=%s", type(exc).__name__)
-            yield ndjson_event({"type": "error", "message": public_api_error(exc)[0]})
+            error_code = getattr(exc, "code", type(exc).__name__)
+            provider_response_id = getattr(exc, "response_id", None)
+            LOGGER.warning(
+                "chat_stream_failed request_id=%s type=%s code=%s provider_response_id=%s",
+                request_id,
+                type(exc).__name__,
+                error_code,
+                provider_response_id or "unavailable",
+            )
+            public_message = public_api_error(exc)[0]
+            yield ndjson_event(
+                {
+                    "type": "error",
+                    "message": f"{public_message} Referencia: {request_id}.",
+                    "requestId": request_id,
+                }
+            )
         finally:
             if completed and revision >= 0:
                 SESSIONS.complete(session_id, revision, question, "".join(answer_parts))
@@ -485,47 +581,235 @@ def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
     return response
 
 
-def stream_chat_response(question: str, detail_level: str, history: list[dict[str, str]] | None = None) -> Iterator[str]:
-    """Selecciona documentos y transmite únicamente la respuesta final."""
-    if CLIENT is None:
-        raise RuntimeError("El cliente de OpenAI no está configurado.")
-    tools = [chat_core.crear_tool_leer_documento(CATALOG)]
-    instructions = chat_core.construir_instrucciones(detail_level)
-    input_items: list[Any] = [*(history or []), {"role": "user", "content": question}]
+def _profile_tools() -> list[dict[str, Any]]:
+    return [
+        chat_core.crear_tool_leer_documento(CATALOG),
+        chat_core.crear_tool_buscar_proyectos(),
+        chat_core.crear_tool_leer_proyecto(PROJECTS),
+    ]
+
+
+def _plan_tool_calls(
+    input_items: list[Any],
+    instructions: str,
+) -> Any:
+    """Obtiene una planificación válida sin publicar nunca su texto intermedio."""
+    last_error: Exception | None = None
+    for attempt in range(max(1, MAX_GENERATION_ATTEMPTS)):
+        try:
+            response = CLIENT.responses.create(
+                model=MODEL,
+                instructions=instructions,
+                tools=_profile_tools(),
+                tool_choice="required",
+                parallel_tool_calls=True,
+                input=input_items,
+                max_output_tokens=PLANNING_TOKEN_LIMIT * (2**attempt),
+                **openai_reasoning_options(),
+            )
+            validate_completed_response(response, "planning")
+            tool_calls = [
+                item
+                for item in getattr(response, "output", [])
+                if getattr(item, "type", "") == "function_call"
+            ]
+            if not tool_calls:
+                raise GenerationError(
+                    "planning_without_tool",
+                    "La planificación no seleccionó ninguna fuente.",
+                    response_id=response_identifier(response),
+                )
+            return response
+        except AuthenticationError:
+            raise
+        except (APIConnectionError, APIStatusError, RateLimitError, GenerationError) as exc:
+            last_error = exc
+            if attempt + 1 >= max(1, MAX_GENERATION_ATTEMPTS):
+                raise
+            LOGGER.warning(
+                "planning_retry attempt=%s type=%s code=%s",
+                attempt + 1,
+                type(exc).__name__,
+                getattr(exc, "code", "unclassified"),
+            )
+    raise last_error or GenerationError("planning_unknown", "No se pudo planificar la respuesta.")
+
+
+def _append_tool_results(
+    input_items: list[Any],
+    planning_response: Any,
+    question: str,
+) -> chat_core.AccessTrace:
+    """Ejecuta todas las llamadas solicitadas y conserva su relación call_id."""
     trace = chat_core.AccessTrace()
-    planning_response = CLIENT.responses.create(model=MODEL, instructions=instructions, tools=tools, input=input_items, max_output_tokens=output_token_limit(detail_level))
-    input_items.extend(planning_response.output)
-    tool_calls = [item for item in planning_response.output if item.type == "function_call"]
-    if not tool_calls:
-        if planning_response.output_text:
-            yield planning_response.output_text
-        return
+    result_cache: dict[tuple[str, str], str] = {}
+    tool_calls = [
+        item
+        for item in planning_response.output
+        if getattr(item, "type", "") == "function_call"
+    ]
     for tool_call in tool_calls:
         try:
             arguments = json.loads(tool_call.arguments)
-            result = chat_core.ejecutar_tool(tool_call.name, arguments, CATALOG, trace, query=question)
+            if not isinstance(arguments, dict):
+                raise TypeError("Los argumentos de herramienta deben ser un objeto.")
+            cache_key = (
+                tool_call.name,
+                json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+            )
+            result = result_cache.get(cache_key)
+            if result is None:
+                result = chat_core.ejecutar_tool(
+                    tool_call.name,
+                    arguments,
+                    CATALOG,
+                    trace,
+                    query=question,
+                    projects=PROJECTS,
+                )
+                result_cache[cache_key] = result
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            result = json.dumps({"ok": False, "error": "No se pudo consultar el documento solicitado."}, ensure_ascii=False)
-            LOGGER.warning("tool_failed type=%s", type(exc).__name__)
-        input_items.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})
-    completed_response = None
+            result = json.dumps(
+                {"ok": False, "error": "No se pudo consultar la fuente solicitada."},
+                ensure_ascii=False,
+            )
+            LOGGER.warning(
+                "tool_failed name=%s type=%s",
+                getattr(tool_call, "name", "unknown"),
+                type(exc).__name__,
+            )
+        input_items.append(
+            {
+                "type": "function_call_output",
+                "call_id": tool_call.call_id,
+                "output": result,
+            }
+        )
+    return trace
+
+
+def _collect_streamed_response(
+    input_items: list[Any],
+    instructions: str,
+    max_output_tokens: int,
+) -> str:
+    """Acumula una respuesta del proveedor y solo la publica si termina correctamente."""
+    terminal_response = None
+    terminal_type = ""
     streamed_text: list[str] = []
-    with CLIENT.responses.create(model=MODEL, instructions=instructions, input=input_items, stream=True, max_output_tokens=output_token_limit(detail_level)) as stream:
+    with CLIENT.responses.create(
+        model=MODEL,
+        instructions=instructions,
+        input=input_items,
+        stream=True,
+        max_output_tokens=max_output_tokens,
+        **openai_reasoning_options(),
+    ) as stream:
         for event in stream:
             event_type = getattr(event, "type", "")
             if event_type == "response.output_text.delta":
                 delta = getattr(event, "delta", "")
-                if delta:
+                if isinstance(delta, str) and delta:
                     streamed_text.append(delta)
-                    yield delta
-            elif event_type == "response.completed":
-                completed_response = event.response
-            elif event_type == "response.failed":
-                raise RuntimeError("Respuesta fallida")
-    if completed_response is None:
-        raise RuntimeError("No se recibió una respuesta completa.")
-    if not streamed_text and completed_response.output_text:
-        yield completed_response.output_text
+            elif event_type in {
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            }:
+                terminal_response = event.response
+                terminal_type = event_type
+            elif event_type == "error":
+                raise GenerationError(
+                    getattr(event, "code", None) or "provider_stream_error",
+                    getattr(event, "message", "Error durante la respuesta en streaming."),
+                )
+
+    if terminal_response is None:
+        raise GenerationError(
+            "missing_terminal_event",
+            "El proveedor cerró la respuesta sin un estado terminal.",
+        )
+    validate_completed_response(terminal_response, "generation")
+    if terminal_type != "response.completed":
+        raise GenerationError(
+            f"unexpected_{terminal_type}",
+            "La respuesta no terminó con el evento esperado.",
+            response_id=response_identifier(terminal_response),
+        )
+
+    response_text = getattr(terminal_response, "output_text", "") or "".join(streamed_text)
+    sanitized = chat_core.sanitizar_texto_publico(response_text).strip()
+    if not sanitized:
+        raise GenerationError(
+            "empty_response",
+            "El proveedor devolvió una respuesta vacía.",
+            response_id=response_identifier(terminal_response),
+        )
+    return sanitized
+
+
+def _generate_complete_response(
+    input_items: list[Any],
+    instructions: str,
+    detail_level: str,
+) -> str:
+    """Reintenta respuestas truncadas o transitorias antes de exponer contenido."""
+    base_limit = output_token_limit(detail_level)
+    last_error: Exception | None = None
+    attempts = max(1, MAX_GENERATION_ATTEMPTS)
+    for attempt in range(attempts):
+        retry_instructions = instructions
+        if attempt:
+            retry_instructions += (
+                "\n\n## Completion retry\n"
+                "The previous generation did not reach a completed terminal state. "
+                "Answer the same user request completely, preserve the strongest "
+                "evidence and respect the word range strictly."
+            )
+        try:
+            return _collect_streamed_response(
+                input_items,
+                retry_instructions,
+                base_limit * (2**attempt),
+            )
+        except AuthenticationError:
+            raise
+        except (APIConnectionError, APIStatusError, RateLimitError, GenerationError) as exc:
+            last_error = exc
+            if attempt + 1 >= attempts:
+                raise
+            LOGGER.warning(
+                "generation_retry attempt=%s type=%s code=%s",
+                attempt + 1,
+                type(exc).__name__,
+                getattr(exc, "code", "unclassified"),
+            )
+    raise last_error or GenerationError("generation_unknown", "No se pudo generar la respuesta.")
+
+
+def stream_chat_response(
+    question: str,
+    detail_level: str,
+    history: list[dict[str, str]] | None = None,
+) -> Iterator[str]:
+    """Recupera evidencia y transmite únicamente una respuesta final validada."""
+    if CLIENT is None:
+        raise RuntimeError("El cliente de OpenAI no está configurado.")
+
+    instructions = chat_core.construir_instrucciones(detail_level)
+    input_items: list[Any] = [*(history or []), {"role": "user", "content": question}]
+    planning_response = _plan_tool_calls(input_items, instructions)
+    input_items.extend(planning_response.output)
+    trace = _append_tool_results(input_items, planning_response, question)
+    answer = _generate_complete_response(input_items, instructions, detail_level)
+
+    LOGGER.info(
+        "chat_generation_completed documents=%s answer_chars=%s",
+        len(trace.accesses),
+        len(answer),
+    )
+    for start in range(0, len(answer), STREAM_CHUNK_CHARS):
+        yield answer[start : start + STREAM_CHUNK_CHARS]
 
 
 @app.get("/")

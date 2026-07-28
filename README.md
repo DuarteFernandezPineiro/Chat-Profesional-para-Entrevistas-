@@ -54,6 +54,11 @@ Configura estos valores como secretos o variables de entorno en App Platform:
 | --- | --- |
 | `OPENAI_API_KEY` | Clave secreta de OpenAI, solo en App Platform; nunca en el repositorio. |
 | `OPENAI_MODEL` | `gpt-5.5` o el modelo aprobado que se utilice. |
+| `OPENAI_TIMEOUT_SECONDS` | `90`; tiempo máximo de espera de red por operación. |
+| `OPENAI_MAX_RETRIES` | `2`; reintentos del SDK para errores transitorios. |
+| `OPENAI_REASONING_EFFORT` | `low`; reduce latencia y consumo en esta carga conversacional. |
+| `OPENAI_GENERATION_ATTEMPTS` | `2`; permite regenerar antes de responder si la salida queda incompleta. |
+| `OPENAI_PLANNING_MAX_OUTPUT_TOKENS` | `2000`; presupuesto independiente para seleccionar fuentes. |
 | `CHAT_COOKIE_SECURE` | `true` |
 | `CHAT_ENABLE_HSTS` | `true` |
 | `CHAT_PUBLIC_ORIGIN` | URL pública exacta, por ejemplo `https://tu-app.ondigitalocean.app`. |
@@ -96,6 +101,10 @@ respeta la preferencia Do Not Track del navegador.
   concurrencia y sesiones activas para proteger el coste y la disponibilidad.
 - El contexto se limita a las últimas cuatro interacciones y los documentos extensos
   se reducen a sus secciones más relevantes antes de enviarlos al modelo.
+- La selección de fuentes es obligatoria, los proyectos se recuperan desde un índice
+  estructurado y una respuesta incompleta se reintenta antes de llegar al navegador.
+- La salida pública elimina números de teléfono, identificadores internos y texto de
+  planificación como defensa adicional a las instrucciones del modelo.
 - Los recursos estáticos se sirven con caché larga; las API y páginas no se almacenan
   en caché.
 

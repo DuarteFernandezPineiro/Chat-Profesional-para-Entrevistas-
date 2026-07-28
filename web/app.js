@@ -289,6 +289,30 @@ function showError(message, error, question) {
   message.bubble.appendChild(retryButton);
 }
 
+function preservePartialResponse(message, answer, error, question) {
+  renderMarkdown(message.content, answer);
+  finishStreaming(message, answer, true);
+
+  const notice = document.createElement("div");
+  notice.className = "partial-response-notice";
+
+  const explanation = document.createElement("p");
+  explanation.textContent = `${error} Se ha conservado el contenido recibido.`;
+
+  const retryButton = document.createElement("button");
+  retryButton.className = "retry-button";
+  retryButton.type = "button";
+  retryButton.textContent = "Generar de nuevo";
+  retryButton.addEventListener("click", () => {
+    input.value = question;
+    resizeInput();
+    form.requestSubmit();
+  });
+
+  notice.append(explanation, retryButton);
+  message.stack.appendChild(notice);
+}
+
 function setLoading(isLoading) {
   isRequestPending = isLoading;
   submitButton.classList.toggle("is-stop", isLoading);
@@ -770,8 +794,19 @@ form.addEventListener("submit", async (event) => {
       message =
         "La respuesta tardó demasiado y se detuvo automáticamente. Puedes volver a intentarlo.";
     }
-    showError(pendingMessage, message, question);
-    statusRegion.textContent = "No se pudo completar la respuesta.";
+    if (answer.trim()) {
+      flushRender();
+      preservePartialResponse(pendingMessage, answer, message, question);
+      conversationHistory.push(
+        { role: "user", content: question },
+        { role: "assistant", content: answer },
+      );
+      conversationHistory = conversationHistory.slice(-8);
+      statusRegion.textContent = "Respuesta parcial conservada.";
+    } else {
+      showError(pendingMessage, message, question);
+      statusRegion.textContent = "No se pudo completar la respuesta.";
+    }
     captureAnalyticsEvent("chat_question_failed", {
       detail_level: detailLevel,
       response_duration_ms: Math.round(performance.now() - requestStartedAt),
