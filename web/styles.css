@@ -708,6 +708,20 @@ h3 {
   cursor: pointer;
 }
 
+.partial-response-notice {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: var(--radius-control);
+  color: var(--danger);
+  background: var(--danger-soft);
+  font-size: 0.8125rem;
+}
+
+.partial-response-notice p {
+  margin: 0;
+}
+
 .message-actions {
   margin-top: 8px;
 }
@@ -1244,6 +1258,67 @@ textarea::placeholder {
     min-height: 40px;
   }
 
+}
+
+.analytics-consent {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 20;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.18);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.analytics-consent p {
+  margin: 0;
+}
+
+.analytics-consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.analytics-consent button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.analytics-consent button[data-analytics-choice="accept"] {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #fff;
+}
+
+.analytics-consent button[data-analytics-choice="accept"]:hover {
+  border-color: var(--brand-hover);
+  background: var(--brand-hover);
+}
+
+.analytics-consent button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--focus) 45%, transparent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 560px) {
+  .analytics-consent {
+    right: 16px;
+    bottom: 16px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

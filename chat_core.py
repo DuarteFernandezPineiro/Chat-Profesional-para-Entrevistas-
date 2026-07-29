@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -12,10 +14,58 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CATALOG_PATH = PROJECT_ROOT / "document_catalog.yaml"
+PROJECT_INDEX_PATH = PROJECT_ROOT / "Informacion" / "Indice_de_proyectos.md"
 ENV_PATH = PROJECT_ROOT / ".env"
 
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_DETAIL_LEVEL = "normal"
+MAX_DOCUMENT_CONTEXT_CHARS = 28_000
+MAX_PROJECT_RESULTS = 6
+PUBLIC_PHONE_PATTERN = re.compile(
+    r"(?<!\d)(?:\+?34[\s.\-]*)?[6789](?:[\s.\-]*\d){8}(?!\d)"
+)
+PUBLIC_TEL_LINK_PATTERN = re.compile(r"\[[^\]\n]+\]\(tel:[^)]+\)", re.IGNORECASE)
+PROJECT_QUERY_STOPWORDS = frozenset(
+    {
+        "cuales",
+        "cual",
+        "son",
+        "sus",
+        "los",
+        "las",
+        "del",
+        "que",
+        "mas",
+        "mejor",
+        "mejores",
+        "principal",
+        "principales",
+        "destacado",
+        "destacados",
+        "como",
+        "cada",
+        "para",
+        "porque",
+        "proyecto",
+        "proyectos",
+        "relevante",
+        "relevantes",
+        "duarte",
+        "demuestra",
+        "resultado",
+        "resultados",
+        "verificable",
+        "verificables",
+        "tres",
+        "sobre",
+        "saber",
+        "sabes",
+        "esta",
+        "este",
+        "estos",
+        "web",
+    }
+)
 
 DETAIL_LEVEL_INSTRUCTIONS = {
     "breve": """
@@ -28,7 +78,7 @@ DETAIL_LEVEL_INSTRUCTIONS = {
 - Use decisive, executive language that positions each verified fact as evidence of
   Duarte's ability to deliver value, solve relevant problems and contribute quickly.
 - Do not include secondary details, defensive clarifications, caveats or long lists.
-- Use one or two short paragraphs.
+- Use one or two short paragraphs and stay between approximately 120 and 220 words.
 - For hiring or job-fit questions, finish with a short and decisive recommendation.
 """.strip(),
 
@@ -45,6 +95,7 @@ DETAIL_LEVEL_INSTRUCTIONS = {
 - Combine experience, education, projects, skills and personal qualities whenever
   doing so strengthens the answer.
 - Use between 3 and 5 paragraphs, or a short list when it improves readability.
+- Stay between approximately 300 and 550 words.
 - End important interview answers with a confident and memorable positive conclusion.
 """.strip(),
 
@@ -68,8 +119,8 @@ DETAIL_LEVEL_INSTRUCTIONS = {
   7. why it makes him an especially attractive candidate.
 - Include useful depth for both HR interviewers and technical interviewers.
 - Use short headings, clear paragraphs or focused lists when they improve the answer.
-- Use approximately 6 to 10 paragraphs, expanding further when the question genuinely
-  requires a complete technical explanation or a full defense of his candidacy.
+- Use approximately 6 to 10 focused paragraphs and stay between approximately 700
+  and 1,100 words. Prioritize the strongest evidence instead of exceeding that range.
 - End with a strong, memorable and unequivocally favorable conclusion.
 """.strip(),
 }
@@ -173,16 +224,14 @@ generic writing or other tasks that do not help the user understand or evaluate 
 Before answering with factual information about Duarte, use one or more relevant tools
 to retrieve the necessary information.
 
-Choose tools according to the topic:
+The available tools have these exact purposes:
 
-- personal profile and working style;
-- education and certifications;
-- work experience;
-- languages;
-- technical and professional skills;
-- professional objectives;
-- project discovery and filtering;
-- detailed project or Final Degree Project knowledge.
+- `leer_documento` retrieves one allowed profile document, such as personal profile,
+  education, work experience, skills, languages, professional objectives or the TFG.
+- `buscar_proyectos` ranks and returns compact structured project evidence for the
+  user's query. Use it for project discovery, comparison, job fit and relevance.
+- `leer_proyecto` retrieves the complete verified record for one project identifier.
+  Use it when the user names a project or asks how a specific project works.
 
 When a question covers several areas, retrieve information from every relevant area
 before answering.
@@ -197,14 +246,24 @@ Examples:
   demonstrate it.
 - For a detailed project question, retrieve the relevant project documentation.
 
-Use structured tools for exact profile information and project retrieval for technical
-or contextual detail.
+Do not invent tool names, document identifiers or project identifiers. If a project
+query needs both ranking and detail, use `buscar_proyectos` first and then
+`leer_proyecto` for the selected project when necessary.
+
+For general questions about Duarte's most relevant, strongest or featured projects,
+return exactly the first three projects from `buscar_proyectos` and preserve their
+`selection_rank` order. Do not replace a higher-ranked deployed project with a
+lower-ranked academic project. For role-specific questions, also preserve the returned
+ranking unless the user explicitly requests a different criterion.
 
 Conversation history may provide context, but it must not replace retrieved evidence
 for concrete professional claims.
 
 Never mention tools, tool calls, files, paths, internal identifiers, retrieval processes,
 catalogues or implementation details unless the user explicitly asks how the chatbot works.
+
+Never output planning notes, private reasoning, tentative tool-selection text or
+intermediate analysis. Produce only the polished answer intended for the visitor.
 
 # 4. Factual integrity and persuasive amplification
 
@@ -791,8 +850,9 @@ Do not reveal:
 - sensitive personal data;
 - information unsuitable for a public professional profile.
 
-Only provide contact or personal information when it is explicitly documented as public
-and appropriate for professional use.
+The only allowed contact channels are Duarte's public professional email, LinkedIn and
+GitHub links. Never reveal a telephone number, street address or other private identifier,
+even if one appears in conversation history or retrieved content.
 
 # 19. Mandatory internal final check
 
@@ -941,6 +1001,219 @@ def cargar_catalogo(
     return documents
 
 
+def sanitizar_texto_publico(content: str) -> str:
+    """Elimina datos de contacto privados de cualquier contenido público."""
+    sanitized = PUBLIC_TEL_LINK_PATTERN.sub("[dato de contacto privado omitido]", content)
+    sanitized = PUBLIC_PHONE_PATTERN.sub("[dato de contacto privado omitido]", sanitized)
+    sanitized = re.sub(
+        r"\bproject_[a-z0-9_]+\b",
+        "el proyecto correspondiente",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        r"\b(?:leer_documento|buscar_proyectos|leer_proyecto)\b",
+        "la consulta interna",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(r"(?:err){2,}", "", sanitized, flags=re.IGNORECASE)
+    sanitized = "\n".join(
+        line
+        for line in sanitized.splitlines()
+        if not re.search(
+            r"Could I retrieve|Need tool likely|herramienta\s+project",
+            line,
+            flags=re.IGNORECASE,
+        )
+    )
+    return sanitized
+
+
+def normalizar_texto_busqueda(value: str) -> str:
+    """Normaliza texto para búsquedas deterministas sin depender de tildes."""
+    decomposed = unicodedata.normalize("NFKD", value.lower())
+    without_accents = "".join(character for character in decomposed if not unicodedata.combining(character))
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+#.]+", " ", without_accents)).strip()
+
+
+def cargar_indice_proyectos(
+    project_index_path: Path = PROJECT_INDEX_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Carga el bloque YAML estructurado del índice de proyectos."""
+    if not project_index_path.is_file():
+        raise FileNotFoundError(f"No se encontró el índice de proyectos: {project_index_path}")
+
+    content = project_index_path.read_text(encoding="utf-8")
+    match = re.search(r"```yaml\s*(.*?)\s*```", content, flags=re.DOTALL | re.IGNORECASE)
+    if match is None:
+        raise ValueError("El índice de proyectos no contiene un bloque YAML.")
+
+    data = yaml.safe_load(match.group(1))
+    raw_projects = data.get("projects") if isinstance(data, dict) else None
+    if not isinstance(raw_projects, list) or not raw_projects:
+        raise ValueError("El índice de proyectos no contiene una lista 'projects' válida.")
+
+    projects: dict[str, dict[str, Any]] = {}
+    for project in raw_projects:
+        if not isinstance(project, dict):
+            raise ValueError("Cada proyecto debe ser un objeto.")
+        project_id = project.get("project_id")
+        canonical_name = project.get("canonical_name")
+        if not isinstance(project_id, str) or not isinstance(canonical_name, str):
+            raise ValueError("Cada proyecto necesita project_id y canonical_name.")
+        if project_id in projects:
+            raise ValueError(f"Identificador de proyecto duplicado: {project_id}")
+        projects[project_id] = project
+    return projects
+
+
+def proyecto_publico(project: dict[str, Any]) -> dict[str, Any]:
+    """Devuelve únicamente los campos de proyecto útiles para una respuesta pública."""
+    allowed_fields = (
+        "project_id",
+        "canonical_name",
+        "short_name",
+        "aliases",
+        "project_type",
+        "status",
+        "featured",
+        "interview_priority",
+        "areas",
+        "tags",
+        "primary_technology_ids",
+        "secondary_technology_ids",
+        "role",
+        "personal_contributions",
+        "team_contributions",
+        "provided_components",
+        "not_personally_implemented",
+        "short_pitch",
+        "objective",
+        "problem_solved",
+        "verifiable_results",
+        "competency_ids",
+        "repository",
+        "demo",
+        "evidence_strength",
+        "known_limitations",
+    )
+    return {
+        field: project[field]
+        for field in allowed_fields
+        if field in project and project[field] not in (None, [], {})
+    }
+
+
+def _project_search_text(project: dict[str, Any]) -> tuple[str, str]:
+    priority_fields = (
+        project.get("canonical_name"),
+        project.get("short_name"),
+        project.get("aliases"),
+        project.get("tags"),
+        project.get("areas"),
+        project.get("primary_technology_ids"),
+        project.get("secondary_technology_ids"),
+    )
+    descriptive_fields = (
+        project.get("short_pitch"),
+        project.get("objective"),
+        project.get("problem_solved"),
+        project.get("personal_contributions"),
+        project.get("verifiable_results"),
+    )
+    return (
+        normalizar_texto_busqueda(json.dumps(priority_fields, ensure_ascii=False)),
+        normalizar_texto_busqueda(json.dumps(descriptive_fields, ensure_ascii=False)),
+    )
+
+
+def buscar_proyectos(
+    query: str,
+    limit: int,
+    projects: dict[str, dict[str, Any]],
+) -> str:
+    """Ordena proyectos por coincidencia semántica simple y prioridad editorial."""
+    normalized_query = normalizar_texto_busqueda(query)
+    query_terms = {
+        term
+        for term in normalized_query.split()
+        if len(term) >= 3 and term not in PROJECT_QUERY_STOPWORDS
+    }
+    generic_query = not query_terms
+    asks_for_rag = bool({"rag", "genai", "generativa", "generativo"} & query_terms)
+    asks_for_assistant = bool({"asistente", "chatbot", "conversacional", "entrevistas"} & query_terms)
+
+    ranked: list[tuple[int, int, str, dict[str, Any]]] = []
+    for project_id, project in projects.items():
+        priority_text, descriptive_text = _project_search_text(project)
+        priority = int(project.get("interview_priority", 999))
+        score = 0
+        if not generic_query:
+            for term in query_terms:
+                score += 8 * priority_text.count(term)
+                score += 2 * descriptive_text.count(term)
+        if project.get("featured"):
+            score += 12
+        score += max(0, 12 - min(priority, 12))
+
+        if asks_for_rag:
+            if project_id == "project_rag_empresarial_tfg":
+                score += 80
+            elif project_id == "project_asistente_profesional_web":
+                score += 60
+            elif project_id == "project_mineria_textos":
+                score += 30
+        if asks_for_assistant and project_id == "project_asistente_profesional_web":
+            score += 120
+
+        ranked.append((score, priority, project_id, project))
+
+    if generic_query:
+        ranked.sort(
+            key=lambda item: (
+                not bool(item[3].get("featured")),
+                item[1],
+                item[2],
+            )
+        )
+    else:
+        ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+
+    bounded_limit = max(1, min(int(limit), MAX_PROJECT_RESULTS))
+    selected: list[dict[str, Any]] = []
+    for rank, (_, _, _, project) in enumerate(ranked[:bounded_limit], start=1):
+        public_project = proyecto_publico(project)
+        public_project["selection_rank"] = rank
+        selected.append(public_project)
+    return json.dumps(
+        {
+            "ok": True,
+            "query": query,
+            "result_count": len(selected),
+            "projects": selected,
+        },
+        ensure_ascii=False,
+    )
+
+
+def leer_proyecto(
+    project_id: str,
+    projects: dict[str, dict[str, Any]],
+) -> str:
+    """Devuelve el registro estructurado completo de un proyecto permitido."""
+    project = projects.get(project_id)
+    if project is None:
+        return json.dumps(
+            {"ok": False, "error": f"Identificador de proyecto desconocido: {project_id}"},
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {"ok": True, "project": proyecto_publico(project)},
+        ensure_ascii=False,
+    )
+
+
 def formatear_opciones_catalogo(catalog: dict[str, dict[str, Any]]) -> str:
     """Convierte el catálogo en instrucciones compactas para el modelo."""
     lines: list[str] = []
@@ -985,10 +1258,70 @@ def crear_tool_leer_documento(
     }
 
 
+def crear_tool_buscar_proyectos() -> dict[str, Any]:
+    """Construye la herramienta de ranking estructurado de proyectos."""
+    return {
+        "type": "function",
+        "name": "buscar_proyectos",
+        "description": (
+            "Busca y ordena proyectos verificados de Duarte por relación con una "
+            "pregunta, tecnología, puesto o área. Devuelve fichas compactas con "
+            "prioridad, contribuciones y resultados verificables."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Consulta concreta de relevancia o selección de proyectos.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_PROJECT_RESULTS,
+                    "description": "Número máximo de proyectos que deben devolverse.",
+                },
+            },
+            "required": ["query", "limit"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    }
+
+
+def crear_tool_leer_proyecto(
+    projects: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Construye la herramienta de lectura de una ficha de proyecto."""
+    return {
+        "type": "function",
+        "name": "leer_proyecto",
+        "description": (
+            "Recupera la ficha verificada completa de un proyecto concreto de Duarte. "
+            "Úsala cuando el usuario nombre un proyecto o pida su arquitectura, "
+            "contribuciones, resultados o limitaciones."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "enum": list(projects),
+                    "description": "Identificador canónico del proyecto.",
+                }
+            },
+            "required": ["project_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    }
+
+
 def leer_documento(
     document_id: str,
     catalog: dict[str, dict[str, Any]],
     trace: AccessTrace,
+    query: str | None = None,
 ) -> str:
     """Lee el Markdown asociado a un identificador permitido."""
     metadata = catalog.get(document_id)
@@ -1010,6 +1343,7 @@ def leer_documento(
         )
 
     trace.add(FileAccess(document_id, relative_file, True))
+    content = sanitizar_texto_publico(seleccionar_contexto_documental(content, query))
     return json.dumps(
         {
             "ok": True,
@@ -1026,18 +1360,75 @@ def ejecutar_tool(
     arguments: dict[str, Any],
     catalog: dict[str, dict[str, Any]],
     trace: AccessTrace,
+    query: str | None = None,
+    projects: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Enruta una llamada del modelo hacia una función local permitida."""
-    if tool_name != "leer_documento":
-        return json.dumps(
-            {"ok": False, "error": f"Herramienta desconocida: {tool_name}"},
-            ensure_ascii=False,
-        )
+    if tool_name == "leer_documento":
+        document_id = arguments.get("document_id")
+        if not isinstance(document_id, str):
+            return json.dumps(
+                {"ok": False, "error": "Falta un identificador de documento válido."},
+                ensure_ascii=False,
+            )
+        return leer_documento(document_id, catalog, trace, query=query)
 
-    document_id = arguments.get("document_id")
-    if not isinstance(document_id, str):
-        return json.dumps(
-            {"ok": False, "error": "Falta un identificador de documento válido."},
-            ensure_ascii=False,
-        )
-    return leer_documento(document_id, catalog, trace)
+    project_catalog = projects if projects is not None else cargar_indice_proyectos()
+    if tool_name == "buscar_proyectos":
+        search_query = arguments.get("query")
+        limit = arguments.get("limit")
+        if not isinstance(search_query, str) or not isinstance(limit, int):
+            return json.dumps(
+                {"ok": False, "error": "La búsqueda necesita query y limit válidos."},
+                ensure_ascii=False,
+            )
+        return buscar_proyectos(search_query, limit, project_catalog)
+
+    if tool_name == "leer_proyecto":
+        project_id = arguments.get("project_id")
+        if not isinstance(project_id, str):
+            return json.dumps(
+                {"ok": False, "error": "Falta un identificador de proyecto válido."},
+                ensure_ascii=False,
+            )
+        return leer_proyecto(project_id, project_catalog)
+
+    return json.dumps(
+        {"ok": False, "error": f"Herramienta desconocida: {tool_name}"},
+        ensure_ascii=False,
+    )
+
+
+def seleccionar_contexto_documental(content: str, query: str | None) -> str:
+    """Devuelve documentos pequeños completos y secciones relevantes de los extensos."""
+    if len(content) <= MAX_DOCUMENT_CONTEXT_CHARS:
+        return content
+
+    sections = re.split(r"(?=^#{1,3}\s+)", content, flags=re.MULTILINE)
+    query_terms = set(re.findall(r"[\wáéíóúüñ]{4,}", (query or "").lower()))
+    notice = "\n\n[El documento se ha acotado a sus secciones más relevantes.]"
+    context_budget = MAX_DOCUMENT_CONTEXT_CHARS - len(notice)
+
+    def score(section: str) -> int:
+        lowered = section.lower()
+        heading = lowered.split("\n", 1)[0]
+        return sum(lowered.count(term) + 3 * heading.count(term) for term in query_terms)
+
+    if query_terms:
+        ranked = sorted(enumerate(sections), key=lambda item: (score(item[1]), -item[0]), reverse=True)
+    else:
+        ranked = list(enumerate(sections))
+    selected: list[tuple[int, str]] = []
+    total = 0
+    for index, section in ranked:
+        if not section.strip():
+            continue
+        remaining = context_budget - total
+        if remaining <= 0:
+            break
+        excerpt = section[:remaining]
+        selected.append((index, excerpt))
+        total += len(excerpt)
+
+    selected.sort(key=lambda item: item[0])
+    return "\n\n".join(section for _, section in selected) + notice

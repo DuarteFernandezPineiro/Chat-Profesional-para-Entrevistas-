@@ -3,7 +3,7 @@ schema_version: "1.0"
 document_id: technical_skills
 document_type: structured_skill_source
 language: es
-last_updated: "2026-07-21"
+last_updated: "2026-07-25"
 source_of_truth:
   - Indice_de_proyectos.md
   - current_markdown_project_summaries
@@ -40,6 +40,10 @@ skill_categories:
     name: IA simbólica y algoritmos
   - category_id: software_development
     name: Desarrollo de software
+  - category_id: web_backend_cloud
+    name: Desarrollo web, seguridad y despliegue cloud
+  - category_id: product_analytics
+    name: Analítica de producto y privacidad
   - category_id: semantic_data
     name: Datos semánticos
   - category_id: reactive_concurrent_systems
@@ -88,10 +92,15 @@ skills:
     knowledge_level: intermediate_high
     implementation_level: independent
     professional_experience_level: none
-    production_experience: false
-    experience_contexts: [academic]
-    evidence_strength: strong_summary
+    production_experience: true
+    experience_contexts: [academic, personal_public_project]
+    evidence_strength: verified_repository_and_deployment
     evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [web_chat_app.py, chat_core.py]
+        evidence_type: integration
+        description: "Integración pública de OpenAI Responses API en dos fases: planificación con lectura documental controlada y generación final en streaming."
       - project_id: project_rag_empresarial_tfg
         document_type: summary
         section_titles: [Presentación del proyecto, Funcionamiento paso a paso, Tecnologías algoritmos y conocimientos aplicados]
@@ -99,12 +108,13 @@ skills:
         description: Integración de OpenAI Responses API para extracción/generación y text-embedding-3-large para chunks y consultas.
     can_claim:
       - Ha integrado OpenAI Responses API en un prototipo RAG académico.
+      - Ha desplegado públicamente una aplicación FastAPI que usa OpenAI Responses API para respuestas documentadas y en streaming.
       - Ha usado text-embedding-3-large para recuperación semántica documentada.
     cannot_claim:
       - No afirmar uso documentado de Chat Completions API en este repositorio.
       - No afirmar uso documentado de text-embedding-3-small.
       - No afirmar que implementó internamente modelos de OpenAI.
-    known_limitations: [Integración mediante API externa, sin producción documentada]
+    known_limitations: [Integración mediante API externa; no implica implementación de modelos propios]
     related_technology_ids: [openai_responses_api, openai_embeddings]
 
   - skill_id: skill_ir_bm25_tfidf
@@ -707,10 +717,15 @@ skills:
     knowledge_level: advanced
     implementation_level: advanced_applied
     professional_experience_level: none
-    production_experience: false
-    experience_contexts: [academic, personal]
-    evidence_strength: strong_summary
+    production_experience: true
+    experience_contexts: [academic, personal, personal_public_project]
+    evidence_strength: verified_repository_and_deployment
     evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [web_chat_app.py, chat_core.py]
+        evidence_type: implementation
+        description: Backend público en Python con FastAPI, sesiones en memoria, cola FIFO, integración OpenAI y pruebas automatizadas.
       - project_id: project_rag_empresarial_tfg
         document_type: summary
         section_titles: [Tecnologías algoritmos y conocimientos aplicados]
@@ -733,9 +748,10 @@ skills:
         description: Scripts de visión artificial, generación de datos y procesamiento.
     can_claim:
       - Ha usado Python de forma amplia en IA, NLP, recuperación, visión y algoritmos.
+      - Ha desarrollado y desplegado una aplicación web pública en Python para un asistente profesional con streaming.
     cannot_claim:
       - No afirmar experiencia profesional en Python si no hay evidencia externa en estos documentos.
-    known_limitations: [Evidencia de proyectos académicos y personales documentados, sin producción documentada]
+    known_limitations: [La evidencia de despliegue corresponde a un proyecto personal público]
     related_technology_ids: [python]
 
   - skill_id: skill_java
@@ -925,6 +941,151 @@ skills:
       - No afirmar operación SRE o alta disponibilidad en producción.
     known_limitations: [Prototipos y prácticas]
     related_technology_ids: [python]
+
+  - skill_id: skill_fastapi_asgi
+    name: Backend web ASGI con FastAPI
+    aliases: [FastAPI, ASGI, Uvicorn, API web Python, streaming HTTP]
+    category_id: web_backend_cloud
+    subcategory_id: backend_api
+    knowledge_level: intermediate_high
+    implementation_level: independent
+    professional_experience_level: none
+    production_experience: true
+    experience_contexts: [personal_public_project]
+    evidence_strength: verified_repository_and_deployment
+    evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [web_chat_app.py, Dockerfile]
+        evidence_type: implementation
+        description: Backend FastAPI/ASGI con endpoints de salud, chat NDJSON en streaming, validación Pydantic y ejecución Uvicorn en contenedor.
+    can_claim:
+      - Ha implementado y desplegado un backend FastAPI/ASGI público con respuestas en streaming.
+      - Ha definido endpoints de salud, configuración pública acotada y contratos de entrada con Pydantic.
+    cannot_claim:
+      - No afirmar operación de una plataforma distribuida o multi-región.
+    known_limitations: [Despliegue actual de una sola instancia]
+    related_technology_ids: [python, fastapi, uvicorn, pydantic]
+
+  - skill_id: skill_frontend_web
+    name: Interfaz web con JavaScript
+    aliases: [JavaScript vanilla, HTML, CSS, frontend web, fetch streaming, NDJSON]
+    category_id: web_backend_cloud
+    subcategory_id: frontend
+    knowledge_level: intermediate_high
+    implementation_level: independent
+    professional_experience_level: none
+    production_experience: true
+    experience_contexts: [personal_public_project]
+    evidence_strength: verified_repository_and_deployment
+    evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [web/index.html, web/app.js, web/styles.css]
+        evidence_type: implementation
+        description: Interfaz responsiva en HTML/CSS/JavaScript que consume NDJSON, renderiza el streaming, permite detener respuestas, reiniciar conversación y seleccionar nivel de detalle.
+    can_claim:
+      - Ha desarrollado una interfaz web sin framework que consume respuestas en streaming y gestiona estados de conversación.
+    cannot_claim:
+      - No afirmar uso de un framework frontend que no forma parte del proyecto.
+    known_limitations: [Interfaz construida con JavaScript vanilla]
+    related_technology_ids: [javascript]
+
+  - skill_id: skill_concurrencia_web
+    name: Concurrencia y colas en servicios web
+    aliases: [cola FIFO, control de concurrencia, solicitudes simultáneas, RequestGate]
+    category_id: web_backend_cloud
+    subcategory_id: concurrency_control
+    knowledge_level: intermediate_high
+    implementation_level: independent
+    professional_experience_level: none
+    production_experience: true
+    experience_contexts: [personal_public_project]
+    evidence_strength: verified_repository_and_deployment
+    evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [web_chat_app.py, tests/test_web_chat_app.py]
+        evidence_type: implementation
+        description: "RequestGate basado en Condition y tickets FIFO: permite dos generaciones concurrentes y mantiene hasta veinte consultas adicionales en cola configurable."
+    can_claim:
+      - Ha implementado control de concurrencia y una cola FIFO para evitar rechazos al recibir varias consultas simultáneas.
+    cannot_claim:
+      - No afirmar dimensionamiento de alta escala o procesamiento distribuido.
+    known_limitations: [La cola y el estado de sesión pertenecen a una sola instancia]
+    related_technology_ids: [python, fastapi]
+
+  - skill_id: skill_seguridad_web
+    name: Seguridad básica de aplicaciones web públicas
+    aliases: [CSP, cookies HttpOnly, HSTS, rate limiting, TrustedHost, control de origen]
+    category_id: web_backend_cloud
+    subcategory_id: application_security
+    knowledge_level: intermediate_high
+    implementation_level: independent
+    professional_experience_level: none
+    production_experience: true
+    experience_contexts: [personal_public_project]
+    evidence_strength: verified_repository_and_deployment
+    evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [web_chat_app.py, .env.example]
+        evidence_type: implementation
+        description: Cabeceras CSP, HSTS configurable, cookies HttpOnly/SameSite, host y origen permitidos, límites de tamaño, tasa, sesiones y concurrencia; la clave de OpenAI permanece en backend.
+    can_claim:
+      - Ha aplicado controles de seguridad y límites de uso al publicar una aplicación web basada en API.
+    cannot_claim:
+      - No afirmar auditoría formal, certificación de seguridad ni cumplimiento legal completo.
+    known_limitations: [Controles aplicados al alcance de un proyecto personal de una instancia]
+    related_technology_ids: [python, fastapi]
+
+  - skill_id: skill_despliegue_cloud
+    name: Contenedores y despliegue cloud
+    aliases: [Docker, Dockerfile, DigitalOcean App Platform, despliegue web, variables de entorno]
+    category_id: web_backend_cloud
+    subcategory_id: deployment
+    knowledge_level: intermediate_high
+    implementation_level: independent
+    professional_experience_level: none
+    production_experience: true
+    experience_contexts: [personal_public_project]
+    evidence_strength: verified_repository_and_deployment
+    evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [Dockerfile, README.md, .env.example]
+        evidence_type: deployment
+        description: Imagen Docker no privilegiada basada en Python slim, Uvicorn configurado por PORT y despliegue público en DigitalOcean App Platform con variables de entorno.
+    can_claim:
+      - Ha contenedorizado y desplegado públicamente una aplicación Python en DigitalOcean App Platform.
+    cannot_claim:
+      - No afirmar gestión de infraestructura compleja o administración de clústeres.
+    known_limitations: [Despliegue gestionado de una aplicación de baja demanda]
+    related_technology_ids: [docker, digitalocean_app_platform, uvicorn, python]
+
+  - skill_id: skill_analitica_producto
+    name: Analítica de producto respetuosa con la privacidad
+    aliases: [PostHog, eventos de producto, métricas de rendimiento, consentimiento, Do Not Track]
+    category_id: product_analytics
+    subcategory_id: privacy_first_analytics
+    knowledge_level: intermediate_high
+    implementation_level: independent
+    professional_experience_level: none
+    production_experience: true
+    experience_contexts: [personal_public_project]
+    evidence_strength: verified_repository_and_deployment
+    evidence:
+      - project_id: project_asistente_profesional_web
+        document_type: repository
+        section_titles: [web/app.js, web_chat_app.py, README.md]
+        evidence_type: integration
+        description: Integración opcional con PostHog tras consentimiento, respeto de Do Not Track y eventos agregados de visitas, inicio, finalización, cancelación, error, cola y tiempos; no transmite texto del chat.
+    can_claim:
+      - Ha integrado analítica de producto basada en eventos para observar uso, errores, cola y latencia sin registrar el contenido de las conversaciones.
+    cannot_claim:
+      - No afirmar identificación de usuarios reales ni captura de datos personales a través de la analítica.
+    known_limitations: [Los datos solo se recogen con consentimiento y pueden verse afectados por bloqueadores]
+    related_technology_ids: [javascript, posthog]
 
   - skill_id: skill_rdf_sparql
     name: RDF y SPARQL

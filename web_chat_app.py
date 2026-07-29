@@ -1,16 +1,28 @@
-"""Servidor web local para el asistente profesional de Duarte."""
+"""Servidor ASGI público para el asistente profesional de Duarte."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import secrets
+import threading
+import time
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
 from http import HTTPStatus
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import unquote, urlsplit
 
 from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -25,56 +37,155 @@ import chat_core
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = PROJECT_ROOT / "web"
-HOST = "127.0.0.1"
+load_dotenv(chat_core.ENV_PATH, override=False)
+
 MAX_REQUEST_BYTES = 32_768
 MAX_HISTORY_MESSAGES = 8
 MAX_HISTORY_CHARS = 24_000
+MAX_CONCURRENT_GENERATIONS = int(os.getenv("CHAT_MAX_CONCURRENT_GENERATIONS", "2"))
+MAX_QUEUED_GENERATIONS = int(os.getenv("CHAT_MAX_QUEUED_GENERATIONS", "20"))
+MAX_REQUESTS_PER_MINUTE = int(os.getenv("CHAT_MAX_REQUESTS_PER_MINUTE", "12"))
+SESSION_TTL_SECONDS = int(os.getenv("CHAT_SESSION_TTL_SECONDS", "3600"))
+MAX_SESSIONS = int(os.getenv("CHAT_MAX_SESSIONS", "500"))
+MAX_TRACKED_CLIENTS = int(os.getenv("CHAT_MAX_TRACKED_CLIENTS", "2000"))
+SESSION_COOKIE = "duarte_chat_session"
+COOKIE_SECURE = os.getenv("CHAT_COOKIE_SECURE", "false").lower() == "true"
+ENABLE_HSTS = os.getenv("CHAT_ENABLE_HSTS", "false").lower() == "true"
+PUBLIC_ORIGIN = os.getenv("CHAT_PUBLIC_ORIGIN", "").rstrip("/")
+POSTHOG_PUBLIC_KEY = os.getenv("POSTHOG_PUBLIC_KEY", "").strip()
+POSTHOG_HOST = os.getenv("POSTHOG_HOST", "https://eu.i.posthog.com").strip().rstrip("/")
+POSTHOG_ALLOWED_HOSTS = frozenset({"https://eu.i.posthog.com", "https://us.i.posthog.com"})
 CONTACT_REMINDER_QUESTION_NUMBERS = frozenset({3, 8, 15, 25})
 CONTACT_REMINDER = (
     "## Contacto\n\n"
     "Puedes contactar a Duarte a través de "
     "[LinkedIn](https://www.linkedin.com/in/dfernandezpineiro), "
-    "[correo](mailto:dfernandezpineiro@gmail.com) o "
-    "[635 763 949](tel:+34635763949)."
+    "[GitHub](https://github.com/DuarteFernandezPineiro), "
+    "o [correo](mailto:dfernandezpineiro@gmail.com)."
+    "\n\nTambién puedes probar su "
+    "[proyecto de análisis de Bitcoin]"
+    "(https://bitcoin-decision-chat-674899194994.europe-southwest1.run.app)."
+)
+OUTPUT_TOKEN_LIMITS = {"breve": 1_200, "normal": 2_600, "detallado": 5_200}
+PLANNING_TOKEN_LIMIT = int(os.getenv("OPENAI_PLANNING_MAX_OUTPUT_TOKENS", "2_000"))
+MAX_GENERATION_ATTEMPTS = int(os.getenv("OPENAI_GENERATION_ATTEMPTS", "2"))
+STREAM_SANITIZER_TAIL_CHARS = 192
+STREAM_SENSITIVE_PATTERNS = (
+    chat_core.PUBLIC_TEL_LINK_PATTERN,
+    chat_core.PUBLIC_PHONE_PATTERN,
+    re.compile(r"\bproject_[a-z0-9_]+\b", flags=re.IGNORECASE),
+    re.compile(
+        r"\b(?:leer_documento|buscar_proyectos|leer_proyecto)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(r"(?:err){2,}", flags=re.IGNORECASE),
+    re.compile(
+        r"[^\n]*(?:Could I retrieve|Need tool likely|herramienta\s+project)[^\n]*",
+        flags=re.IGNORECASE,
+    ),
 )
 
-load_dotenv(chat_core.ENV_PATH, override=True)
-
-PORT = int(os.getenv("CHAT_WEB_PORT", "8000"))
 MODEL = os.getenv("OPENAI_MODEL", chat_core.DEFAULT_MODEL)
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "low").strip().lower()
 CATALOG = chat_core.cargar_catalogo()
+PROJECTS = chat_core.cargar_indice_proyectos()
+LOGGER = logging.getLogger("duarte_chat")
+
+
+class GenerationError(RuntimeError):
+    """Fallo de generación clasificable sin exponer información interna."""
+
+    def __init__(self, code: str, message: str, *, response_id: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.response_id = response_id
+
+
+class IncompleteResponseError(GenerationError):
+    """La API terminó correctamente el transporte, pero truncó la respuesta."""
+
+    def __init__(self, reason: str, *, response_id: str | None = None) -> None:
+        super().__init__(
+            "response_incomplete",
+            f"La respuesta quedó incompleta: {reason}",
+            response_id=response_id,
+        )
+        self.reason = reason
+
+
+@dataclass
+class StreamingAttemptState:
+    """Estado observable de un intento de generación incremental."""
+
+    raw_parts: list[str] = field(default_factory=list)
+    terminal_response: Any = None
+    terminal_type: str = ""
+    emitted_chars: int = 0
+
+    @property
+    def raw_text(self) -> str:
+        return "".join(self.raw_parts)
+
+
+class PublicStreamingSanitizer:
+    """Sanea deltas sin dividir datos sensibles entre emisiones."""
+
+    def __init__(self, tail_chars: int = STREAM_SANITIZER_TAIL_CHARS) -> None:
+        self.tail_chars = max(64, tail_chars)
+        self.buffer = ""
+        self.has_emitted = False
+
+    def _clean(self, raw_text: str, *, final: bool = False) -> str:
+        cleaned = chat_core.sanitizar_texto_publico(raw_text)
+        if not self.has_emitted:
+            cleaned = cleaned.lstrip()
+        if final:
+            cleaned = cleaned.rstrip()
+        if cleaned:
+            self.has_emitted = True
+        return cleaned
+
+    def push(self, delta: str) -> str:
+        self.buffer += delta
+        proposed_cut = len(self.buffer) - self.tail_chars
+        if proposed_cut <= 0:
+            return ""
+
+        # Un patrón sensible que cruce el corte permanece completo en el búfer
+        # hasta que pueda sustituirse sin publicar ninguna de sus partes.
+        for pattern in STREAM_SENSITIVE_PATTERNS:
+            for match in pattern.finditer(self.buffer):
+                if match.start() < proposed_cut < match.end():
+                    proposed_cut = match.start()
+        if proposed_cut <= 0:
+            return ""
+
+        raw_prefix = self.buffer[:proposed_cut]
+        self.buffer = self.buffer[proposed_cut:]
+        return self._clean(raw_prefix)
+
+    def flush(self) -> str:
+        raw_remainder = self.buffer
+        self.buffer = ""
+        return self._clean(raw_remainder, final=True)
 
 
 def is_blocked_local_proxy_configured() -> bool:
-    """Detecta el proxy sumidero que algunos entornos locales inyectan."""
-    proxy_names = (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    )
-    blocked_values = {
-        "http://127.0.0.1:9",
-        "https://127.0.0.1:9",
-        "http://localhost:9",
-        "https://localhost:9",
-    }
-    return any(
-        os.getenv(name, "").strip().rstrip("/") in blocked_values
-        for name in proxy_names
-    )
+    """Detecta el proxy sumidero inyectado por algunos entornos locales."""
+    proxy_names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+    blocked_values = {"http://127.0.0.1:9", "https://127.0.0.1:9", "http://localhost:9", "https://localhost:9"}
+    return any(os.getenv(name, "").strip().rstrip("/") in blocked_values for name in proxy_names)
 
 
 def create_openai_client() -> OpenAI | None:
-    """Crea el cliente sin impedir que la interfaz arranque si falta la clave."""
+    """Crea un cliente de backend con un timeout y reintentos acotados."""
     if not os.getenv("OPENAI_API_KEY"):
         return None
-
     options: dict[str, Any] = {
-        "timeout": 45.0,
-        "max_retries": 1,
+        "timeout": OPENAI_TIMEOUT_SECONDS,
+        "max_retries": max(0, OPENAI_MAX_RETRIES),
     }
     if is_blocked_local_proxy_configured():
         options["http_client"] = DefaultHttpxClient(trust_env=False)
@@ -84,334 +195,561 @@ def create_openai_client() -> OpenAI | None:
 CLIENT = create_openai_client()
 
 
-def normalizar_historial(raw_history: object) -> list[dict[str, str]]:
-    """Acepta únicamente un historial breve de mensajes de usuario y asistente."""
-    if raw_history is None:
-        return []
-    if not isinstance(raw_history, list):
-        raise ValueError("El historial debe ser una lista.")
-
-    normalized: list[dict[str, str]] = []
-    total_chars = 0
-
-    for item in raw_history[-MAX_HISTORY_MESSAGES:]:
-        if not isinstance(item, dict):
-            raise ValueError("Cada mensaje del historial debe ser un objeto.")
-
-        role = item.get("role")
-        content = item.get("content")
-        if role not in {"user", "assistant"} or not isinstance(content, str):
-            raise ValueError("El historial contiene un mensaje no válido.")
-
-        content = content.strip()
-        if not content:
-            continue
-
-        total_chars += len(content)
-        if total_chars > MAX_HISTORY_CHARS:
-            raise ValueError("El historial de conversación es demasiado largo.")
-        normalized.append({"role": role, "content": content})
-
-    return normalized
+@dataclass
+class ConversationState:
+    messages: list[dict[str, str]] = field(default_factory=list)
+    completed_questions: int = 0
+    revision: int = 0
+    last_seen: float = field(default_factory=time.monotonic)
 
 
-def normalizar_numero_pregunta(raw_question_number: object) -> int:
-    """Valida el número de pregunta dentro de una conversación web."""
-    if isinstance(raw_question_number, bool) or not isinstance(raw_question_number, int):
-        raise ValueError("El número de pregunta debe ser un entero.")
-    if raw_question_number < 1:
-        raise ValueError("El número de pregunta debe ser mayor que cero.")
-    return raw_question_number
+class ConversationStore:
+    """Sesiones efímeras de una única instancia, sin confiar en el navegador."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, ConversationState] = {}
+        self._lock = threading.RLock()
+
+    def _cleanup(self, now: float) -> None:
+        expired = [key for key, value in self._sessions.items() if now - value.last_seen > SESSION_TTL_SECONDS]
+        for key in expired:
+            self._sessions.pop(key, None)
+        overflow = len(self._sessions) - MAX_SESSIONS + 1
+        if overflow > 0:
+            oldest = sorted(self._sessions, key=lambda key: self._sessions[key].last_seen)[:overflow]
+            for key in oldest:
+                self._sessions.pop(key, None)
+
+    def get_or_create(self, session_id: str | None) -> tuple[str, ConversationState]:
+        now = time.monotonic()
+        with self._lock:
+            self._cleanup(now)
+            if not session_id or session_id not in self._sessions:
+                session_id = secrets.token_urlsafe(32)
+                self._sessions[session_id] = ConversationState()
+            state = self._sessions[session_id]
+            state.last_seen = now
+            return session_id, state
+
+    def begin(self, session_id: str, reset: bool) -> tuple[list[dict[str, str]], int, int]:
+        with self._lock:
+            state = self._sessions[session_id]
+            if reset:
+                state.messages.clear()
+                state.completed_questions = 0
+                state.revision += 1
+            state.last_seen = time.monotonic()
+            return list(state.messages), state.completed_questions + 1, state.revision
+
+    def complete(self, session_id: str, revision: int, question: str, answer: str) -> None:
+        with self._lock:
+            state = self._sessions.get(session_id)
+            if state is None or state.revision != revision:
+                return
+            state.messages.extend(({"role": "user", "content": question}, {"role": "assistant", "content": answer}))
+            state.messages = state.messages[-MAX_HISTORY_MESSAGES:]
+            while (
+                len(state.messages) > 2
+                and sum(len(message["content"]) for message in state.messages) > MAX_HISTORY_CHARS
+            ):
+                state.messages = state.messages[2:]
+            state.completed_questions += 1
+            state.last_seen = time.monotonic()
+
+
+@dataclass
+class QueueTicket:
+    """Representa una petición que espera su turno de generación."""
+
+    position: int = 0
+    acquired: bool = False
+    created_at: float = field(default_factory=time.monotonic)
+
+
+class RequestGate:
+    """Permite dos respuestas en paralelo y ordena el resto en una cola FIFO."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._recent: dict[str, deque[float]] = defaultdict(deque)
+        self._waiting: deque[QueueTicket] = deque()
+        self._active_total = 0
+
+    def reserve(self, client_ip: str) -> QueueTicket:
+        """Registra la petición y devuelve un ticket inmediato o en cola."""
+        now = time.monotonic()
+        with self._condition:
+            if client_ip not in self._recent and len(self._recent) >= MAX_TRACKED_CLIENTS:
+                stale_clients = [
+                    ip for ip, entries in self._recent.items()
+                    if not entries or now - entries[-1] >= 60
+                ]
+                for stale_ip in stale_clients:
+                    self._recent.pop(stale_ip, None)
+                if len(self._recent) >= MAX_TRACKED_CLIENTS:
+                    raise HTTPException(503, "El asistente no puede aceptar más consultas en este momento.")
+
+            entries = self._recent[client_ip]
+            while entries and now - entries[0] >= 60:
+                entries.popleft()
+            if len(entries) >= MAX_REQUESTS_PER_MINUTE:
+                raise HTTPException(429, "Has alcanzado el límite temporal de consultas. Inténtalo de nuevo en un minuto.")
+            entries.append(now)
+
+            if self._active_total < MAX_CONCURRENT_GENERATIONS and not self._waiting:
+                self._active_total += 1
+                return QueueTicket(acquired=True)
+            if len(self._waiting) >= MAX_QUEUED_GENERATIONS:
+                raise HTTPException(503, "La cola de consultas está llena. Inténtalo de nuevo en unos minutos.")
+
+            ticket = QueueTicket(position=len(self._waiting) + 1)
+            self._waiting.append(ticket)
+            return ticket
+
+    def wait_for_turn(self, ticket: QueueTicket) -> None:
+        """Bloquea solo las peticiones en cola hasta que haya capacidad disponible."""
+        if ticket.acquired:
+            return
+        with self._condition:
+            while not (self._waiting and self._waiting[0] is ticket and self._active_total < MAX_CONCURRENT_GENERATIONS):
+                self._condition.wait()
+            self._waiting.popleft()
+            self._active_total += 1
+            ticket.acquired = True
+
+    def release(self, ticket: QueueTicket) -> None:
+        with self._condition:
+            if not ticket.acquired:
+                try:
+                    self._waiting.remove(ticket)
+                except ValueError:
+                    pass
+                self._condition.notify_all()
+                return
+            ticket.acquired = False
+            self._active_total = max(0, self._active_total - 1)
+            self._condition.notify_all()
+
+
+SESSIONS = ConversationStore()
+GATE = RequestGate()
+
+
+class ChatPayload(BaseModel):
+    """Contrato público. El historial lo conserva exclusivamente el servidor."""
+
+    model_config = ConfigDict(extra="ignore")
+    message: str = Field(min_length=1, max_length=2_000)
+    detailLevel: str = chat_core.DEFAULT_DETAIL_LEVEL
+    resetConversation: bool = False
+
+
+class RequestSizeLimitMiddleware:
+    """Rechaza cuerpos grandes incluso si el cliente no envía Content-Length."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope["path"] != "/api/chat":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        content_length = headers.get(b"content-length", b"")
+        if content_length.isdigit() and int(content_length) > MAX_REQUEST_BYTES:
+            await JSONResponse({"detail": "La solicitud es demasiado grande."}, status_code=413)(scope, receive, send)
+            return
+
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                continue
+            body.extend(message.get("body", b""))
+            if len(body) > MAX_REQUEST_BYTES:
+                await JSONResponse({"detail": "La solicitud es demasiado grande."}, status_code=413)(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        sent = False
+
+        async def replay_receive() -> dict[str, Any]:
+            nonlocal sent
+            if sent:
+                return await receive()
+            sent = True
+            return {"type": "http.request", "body": bytes(body), "more_body": False}
+
+        await self.app(scope, replay_receive, send)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        request_id = secrets.token_hex(8)
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' https://*.posthog.com; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self' https://*.posthog.com; object-src 'none'; base-uri 'none'; "
+            "frame-ancestors 'none'; form-action 'self'"
+        )
+        if request.url.path.startswith("/api/") or request.url.path in {"/healthz", "/readyz"}:
+            response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif request.url.path.endswith(".pdf"):
+            response.headers["Cache-Control"] = "public, max-age=3600"
+        if ENABLE_HSTS:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+def allowed_hosts() -> list[str]:
+    configured = [item.strip() for item in os.getenv("CHAT_ALLOWED_HOSTS", "").split(",") if item.strip()]
+    koyeb_domain = os.getenv("KOYEB_PUBLIC_DOMAIN", "").strip()
+    hosts = [*configured, "localhost", "127.0.0.1", koyeb_domain]
+    return list(dict.fromkeys(host for host in hosts if host)) or ["*"]
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts())
+app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+def client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def enforce_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if PUBLIC_ORIGIN and origin and origin.rstrip("/") != PUBLIC_ORIGIN:
+        raise HTTPException(403, "Origen de la solicitud no permitido.")
+
+
+def output_token_limit(detail_level: str) -> int:
+    return int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", str(OUTPUT_TOKEN_LIMITS[detail_level])))
+
+
+def openai_reasoning_options() -> dict[str, object]:
+    """Configura razonamiento acotado para reducir latencia y truncados."""
+    if OPENAI_REASONING_EFFORT in {"none", "low", "medium", "high", "xhigh", "max"}:
+        return {"reasoning": {"effort": OPENAI_REASONING_EFFORT}}
+    return {}
+
+
+def response_identifier(response: Any) -> str | None:
+    """Obtiene un identificador de respuesta sin asumir una versión concreta del SDK."""
+    value = getattr(response, "_request_id", None) or getattr(response, "id", None)
+    return value if isinstance(value, str) else None
+
+
+def response_incomplete_reason(response: Any) -> str:
+    details = getattr(response, "incomplete_details", None)
+    reason = getattr(details, "reason", None)
+    return reason if isinstance(reason, str) and reason else "unknown"
+
+
+def validate_completed_response(response: Any, stage: str) -> None:
+    """Valida estados terminales no transmitidos por excepciones HTTP."""
+    status = getattr(response, "status", None)
+    response_id = response_identifier(response)
+    if status == "completed":
+        return
+    if status == "incomplete":
+        raise IncompleteResponseError(
+            response_incomplete_reason(response),
+            response_id=response_id,
+        )
+    error = getattr(response, "error", None)
+    error_code = getattr(error, "code", None)
+    raise GenerationError(
+        f"{stage}_{status or 'unknown'}",
+        f"La etapa {stage} no se completó ({error_code or status or 'unknown'}).",
+        response_id=response_id,
+    )
 
 
 def mostrar_recordatorio_contacto(question_number: int) -> bool:
-    """Indica si la respuesta debe cerrar con las vías de contacto."""
     return question_number in CONTACT_REMINDER_QUESTION_NUMBERS
 
 
-def incluir_recordatorio_contacto(
-    response_stream: Iterator[str], question_number: int
-) -> Iterator[str]:
-    """Añade el recordatorio al terminar las respuestas configuradas."""
+def incluir_recordatorio_contacto(response_stream: Iterator[str], question_number: int) -> Iterator[str]:
     emitted_response = False
     for delta in response_stream:
         if delta:
             emitted_response = True
             yield delta
-
     if emitted_response and mostrar_recordatorio_contacto(question_number):
         yield f"\n\n{CONTACT_REMINDER}"
 
 
-class ChatRequestHandler(SimpleHTTPRequestHandler):
-    """Sirve la interfaz y expone la API local del chat."""
-
-    server_version = "DuarteChat/2.0"
-
-    def do_GET(self) -> None:
-        request_path = urlsplit(self.path).path
-
-        if request_path == "/api/health":
-            self.send_json(
-                {
-                    "status": "ok" if CLIENT is not None else "configuration_required",
-                    "ready": CLIENT is not None,
-                }
-            )
-            return
-
-        if request_path == "/":
-            self.path = "/index.html"
-        super().do_GET()
-
-    def do_POST(self) -> None:
-        if urlsplit(self.path).path != "/api/chat":
-            self.send_json({"error": "Ruta no encontrada."}, HTTPStatus.NOT_FOUND)
-            return
-
-        if CLIENT is None:
-            self.send_json(
-                {
-                    "error": (
-                        "El servicio no está configurado. Añade OPENAI_API_KEY "
-                        "al archivo .env y reinicia el servidor."
-                    )
-                },
-                HTTPStatus.SERVICE_UNAVAILABLE,
-            )
-            return
-
-        try:
-            payload = self.read_json_body()
-            question = str(payload.get("message", "")).strip()
-            detail_level = chat_core.normalizar_nivel_detalle(
-                str(payload.get("detailLevel", chat_core.DEFAULT_DETAIL_LEVEL))
-            )
-            history = normalizar_historial(payload.get("history"))
-            question_number = normalizar_numero_pregunta(payload.get("questionNumber"))
-
-            if not question:
-                raise ValueError("Escribe una pregunta antes de enviar.")
-            if len(question) > 2_000:
-                raise ValueError("La pregunta supera el máximo de 2.000 caracteres.")
-        except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            return
-
-        self.stream_text_response(question, detail_level, history, question_number)
-
-    def translate_path(self, path: str) -> str:
-        path = unquote(urlsplit(path).path)
-        relative_path = path.lstrip("/") or "index.html"
-        requested_path = (WEB_ROOT / relative_path).resolve()
-
-        try:
-            requested_path.relative_to(WEB_ROOT)
-        except ValueError:
-            return str(WEB_ROOT / "__not_found__")
-        return str(requested_path)
-
-    def end_headers(self) -> None:
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self'; "
-            "img-src 'self' data:; "
-            "connect-src 'self'; "
-            "object-src 'none'; "
-            "base-uri 'none'; "
-            "frame-ancestors 'none'",
-        )
-        super().end_headers()
-
-    def read_json_body(self) -> dict[str, object]:
-        content_type = self.headers.get_content_type()
-        if content_type != "application/json":
-            raise ValueError("La solicitud debe enviarse como JSON.")
-
-        try:
-            content_length = int(self.headers.get("Content-Length", "0"))
-        except ValueError as exc:
-            raise ValueError("La longitud de la solicitud no es válida.") from exc
-
-        if content_length <= 0:
-            return {}
-        if content_length > MAX_REQUEST_BYTES:
-            raise ValueError("La solicitud es demasiado grande.")
-
-        body = self.rfile.read(content_length)
-        data = json.loads(body.decode("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("El cuerpo debe ser un objeto JSON.")
-        return data
-
-    def send_json(
-        self,
-        data: dict[str, object],
-        status: HTTPStatus = HTTPStatus.OK,
-    ) -> None:
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def write_stream_event(self, event: dict[str, object]) -> None:
-        payload = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
-        self.wfile.write(payload)
-        self.wfile.flush()
-
-    def stream_text_response(
-        self,
-        question: str,
-        detail_level: str,
-        history: list[dict[str, str]],
-        question_number: int,
-    ) -> None:
-        response_stream = iter(
-            incluir_recordatorio_contacto(
-                stream_chat_response(question, detail_level, history), question_number
-            )
-        )
-
-        try:
-            first_delta = next(response_stream)
-        except StopIteration:
-            self.send_json(
-                {"error": "El servicio no generó ninguna respuesta."},
-                HTTPStatus.BAD_GATEWAY,
-            )
-            return
-        except Exception as exc:
-            message, status = public_api_error(exc)
-            print(f"[OpenAI] {type(exc).__name__}: {exc}", flush=True)
-            self.send_json({"error": message}, status)
-            return
-
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache, no-transform")
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        try:
-            self.write_stream_event({"type": "delta", "text": first_delta})
-            buffered_delta = ""
-            for delta in response_stream:
-                buffered_delta += delta
-                if len(buffered_delta) >= 96 or "\n" in buffered_delta:
-                    self.write_stream_event(
-                        {"type": "delta", "text": buffered_delta}
-                    )
-                    buffered_delta = ""
-            if buffered_delta:
-                self.write_stream_event({"type": "delta", "text": buffered_delta})
-            self.write_stream_event({"type": "done"})
-        except (BrokenPipeError, ConnectionResetError):
-            return
-        except Exception as exc:
-            public_message, _ = public_api_error(exc)
-            print(f"[OpenAI] {type(exc).__name__}: {exc}", flush=True)
-            try:
-                self.write_stream_event(
-                    {"type": "error", "message": public_message}
-                )
-            except (BrokenPipeError, ConnectionResetError):
-                return
-
-    def log_message(self, format: str, *args: object) -> None:
-        return
-
-
-class ChatHTTPServer(ThreadingHTTPServer):
-    """Servidor local que no espera a peticiones abandonadas al cerrarse."""
-
-    allow_reuse_address = True
-    daemon_threads = True
+def ndjson_event(event: dict[str, object]) -> bytes:
+    return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def public_api_error(exc: Exception) -> tuple[str, HTTPStatus]:
-    """Convierte errores del SDK en mensajes útiles sin filtrar datos sensibles."""
     if isinstance(exc, AuthenticationError):
-        return (
-            "La clave de OpenAI no es válida o no tiene acceso al proyecto.",
-            HTTPStatus.UNAUTHORIZED,
-        )
+        return "El servicio no está disponible temporalmente.", HTTPStatus.SERVICE_UNAVAILABLE
     if isinstance(exc, RateLimitError):
-        return (
-            "El servicio ha alcanzado temporalmente su límite de uso. "
-            "Inténtalo de nuevo en unos segundos.",
-            HTTPStatus.TOO_MANY_REQUESTS,
-        )
+        return "El servicio ha alcanzado temporalmente su límite de uso. Inténtalo de nuevo en unos segundos.", HTTPStatus.TOO_MANY_REQUESTS
     if isinstance(exc, APIConnectionError):
-        return (
-            "No se pudo establecer conexión con OpenAI. "
-            "Revisa la conexión a internet y vuelve a intentarlo.",
-            HTTPStatus.SERVICE_UNAVAILABLE,
-        )
+        return "No se pudo establecer conexión con el servicio de respuestas.", HTTPStatus.SERVICE_UNAVAILABLE
     if isinstance(exc, APIStatusError):
-        return (
-            f"OpenAI no pudo completar la solicitud (estado {exc.status_code}).",
-            HTTPStatus.BAD_GATEWAY,
-        )
-    return (
-        "No se pudo completar la respuesta. Vuelve a intentarlo.",
-        HTTPStatus.INTERNAL_SERVER_ERROR,
-    )
+        return "El servicio de respuestas no pudo completar la consulta.", HTTPStatus.BAD_GATEWAY
+    if isinstance(exc, IncompleteResponseError):
+        return "La respuesta se interrumpió antes de terminar. Vuelve a intentarlo.", HTTPStatus.BAD_GATEWAY
+    if isinstance(exc, GenerationError):
+        return "El servicio no pudo completar esta respuesta.", HTTPStatus.BAD_GATEWAY
+    return "No se pudo completar la respuesta. Vuelve a intentarlo.", HTTPStatus.INTERNAL_SERVER_ERROR
 
 
-def stream_chat_response(
-    question: str,
-    detail_level: str,
-    history: list[dict[str, str]] | None = None,
-) -> Iterator[str]:
-    """Selecciona documentos y transmite únicamente la respuesta final."""
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz() -> JSONResponse:
     if CLIENT is None:
-        raise RuntimeError("El cliente de OpenAI no está configurado.")
+        return JSONResponse({"status": "configuration_required"}, status_code=503)
+    return JSONResponse({"status": "ready"})
 
-    tools = [chat_core.crear_tool_leer_documento(CATALOG)]
-    instructions = chat_core.construir_instrucciones(detail_level)
-    input_items: list[Any] = [*(history or []), {"role": "user", "content": question}]
-    trace = chat_core.AccessTrace()
 
-    planning_response = CLIENT.responses.create(
-        model=MODEL,
-        instructions=instructions,
-        tools=tools,
-        input=input_items,
-    )
-    input_items.extend(planning_response.output)
-    tool_calls = [
-        item for item in planning_response.output if item.type == "function_call"
+@app.get("/api/health")
+def api_health() -> dict[str, object]:
+    return {"status": "ok" if CLIENT is not None else "configuration_required", "ready": CLIENT is not None}
+
+
+@app.get("/api/public-config")
+def public_config() -> dict[str, object]:
+    """Configuración segura que el navegador puede conocer.
+
+    La clave de proyecto de PostHog es pública por diseño; la clave de OpenAI nunca
+    se incluye aquí. Una configuración de host no reconocida desactiva la analítica.
+    """
+    analytics_enabled = bool(POSTHOG_PUBLIC_KEY and POSTHOG_HOST in POSTHOG_ALLOWED_HOSTS)
+    return {
+        "analytics": {
+            "enabled": analytics_enabled,
+            "posthogKey": POSTHOG_PUBLIC_KEY if analytics_enabled else "",
+            "posthogHost": POSTHOG_HOST if analytics_enabled else "",
+        }
+    }
+
+
+@app.post("/api/chat")
+def api_chat(request: Request, payload: ChatPayload) -> StreamingResponse:
+    if CLIENT is None:
+        raise HTTPException(503, "El servicio no está configurado.")
+    enforce_origin(request)
+    question = payload.message.strip()
+    if not question:
+        raise HTTPException(400, "Escribe una pregunta antes de enviar.")
+    try:
+        detail_level = chat_core.normalizar_nivel_detalle(payload.detailLevel)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    ip_address = client_ip(request)
+    request_id = getattr(request.state, "request_id", secrets.token_hex(8))
+    session_id, _ = SESSIONS.get_or_create(request.cookies.get(SESSION_COOKIE))
+    ticket = GATE.reserve(ip_address)
+
+    def event_stream() -> Iterator[bytes]:
+        completed = False
+        revision = -1
+        answer_parts: list[str] = []
+        generation_started_at: float | None = None
+        first_delta_at: float | None = None
+        question_number = 0
+        try:
+            if ticket.position:
+                yield ndjson_event(
+                    {
+                        "type": "queued",
+                        "message": f"Tu consulta está en cola (posición {ticket.position}).",
+                        "position": ticket.position,
+                    }
+                )
+            GATE.wait_for_turn(ticket)
+            generation_started_at = time.monotonic()
+            yield ndjson_event(
+                {
+                    "type": "status",
+                    "message": "El asistente está preparando una respuesta.",
+                    "requestId": request_id,
+                }
+            )
+            history, question_number, revision = SESSIONS.begin(session_id, payload.resetConversation)
+            response_stream = incluir_recordatorio_contacto(
+                stream_chat_response(question, detail_level, history),
+                question_number,
+            )
+            for delta in response_stream:
+                if first_delta_at is None:
+                    first_delta_at = time.monotonic()
+                answer_parts.append(delta)
+                yield ndjson_event({"type": "delta", "text": delta})
+            completed = True
+            finished_at = time.monotonic()
+            yield ndjson_event(
+                {
+                    "type": "metrics",
+                    "detailLevel": detail_level,
+                    "questionNumber": question_number,
+                    "queueWaitMs": round((generation_started_at - ticket.created_at) * 1_000),
+                    "timeToFirstTokenMs": (
+                        round((first_delta_at - ticket.created_at) * 1_000) if first_delta_at is not None else None
+                    ),
+                    "generationDurationMs": round((finished_at - generation_started_at) * 1_000),
+                    "answerCharacters": sum(len(part) for part in answer_parts),
+                    "requestId": request_id,
+                }
+            )
+            yield ndjson_event({"type": "done"})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except HTTPException as exc:
+            message = str(exc.detail)
+            yield ndjson_event({"type": "error", "message": message, "requestId": request_id})
+        except Exception as exc:
+            error_code = getattr(exc, "code", type(exc).__name__)
+            provider_response_id = getattr(exc, "response_id", None)
+            LOGGER.warning(
+                "chat_stream_failed request_id=%s type=%s code=%s provider_response_id=%s",
+                request_id,
+                type(exc).__name__,
+                error_code,
+                provider_response_id or "unavailable",
+            )
+            public_message = public_api_error(exc)[0]
+            yield ndjson_event(
+                {
+                    "type": "error",
+                    "message": f"{public_message} Referencia: {request_id}.",
+                    "requestId": request_id,
+                }
+            )
+        finally:
+            if completed and revision >= 0:
+                SESSIONS.complete(session_id, revision, question, "".join(answer_parts))
+            GATE.release(ticket)
+
+    response = StreamingResponse(event_stream(), media_type="application/x-ndjson; charset=utf-8")
+    response.headers["X-Accel-Buffering"] = "no"
+    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_TTL_SECONDS, httponly=True, secure=COOKIE_SECURE, samesite="lax", path="/")
+    return response
+
+
+def _profile_tools() -> list[dict[str, Any]]:
+    return [
+        chat_core.crear_tool_leer_documento(CATALOG),
+        chat_core.crear_tool_buscar_proyectos(),
+        chat_core.crear_tool_leer_proyecto(PROJECTS),
     ]
 
-    if not tool_calls:
-        final_text = planning_response.output_text or ""
-        if final_text:
-            yield final_text
-        return
 
+def _plan_tool_calls(
+    input_items: list[Any],
+    instructions: str,
+) -> Any:
+    """Obtiene una planificación válida sin publicar nunca su texto intermedio."""
+    last_error: Exception | None = None
+    for attempt in range(max(1, MAX_GENERATION_ATTEMPTS)):
+        try:
+            response = CLIENT.responses.create(
+                model=MODEL,
+                instructions=instructions,
+                tools=_profile_tools(),
+                tool_choice="required",
+                parallel_tool_calls=True,
+                input=input_items,
+                max_output_tokens=PLANNING_TOKEN_LIMIT * (2**attempt),
+                **openai_reasoning_options(),
+            )
+            validate_completed_response(response, "planning")
+            tool_calls = [
+                item
+                for item in getattr(response, "output", [])
+                if getattr(item, "type", "") == "function_call"
+            ]
+            if not tool_calls:
+                raise GenerationError(
+                    "planning_without_tool",
+                    "La planificación no seleccionó ninguna fuente.",
+                    response_id=response_identifier(response),
+                )
+            return response
+        except AuthenticationError:
+            raise
+        except (APIConnectionError, APIStatusError, RateLimitError, GenerationError) as exc:
+            last_error = exc
+            if attempt + 1 >= max(1, MAX_GENERATION_ATTEMPTS):
+                raise
+            LOGGER.warning(
+                "planning_retry attempt=%s type=%s code=%s",
+                attempt + 1,
+                type(exc).__name__,
+                getattr(exc, "code", "unclassified"),
+            )
+    raise last_error or GenerationError("planning_unknown", "No se pudo planificar la respuesta.")
+
+
+def _append_tool_results(
+    input_items: list[Any],
+    planning_response: Any,
+    question: str,
+) -> chat_core.AccessTrace:
+    """Ejecuta todas las llamadas solicitadas y conserva su relación call_id."""
+    trace = chat_core.AccessTrace()
+    result_cache: dict[tuple[str, str], str] = {}
+    tool_calls = [
+        item
+        for item in planning_response.output
+        if getattr(item, "type", "") == "function_call"
+    ]
     for tool_call in tool_calls:
         try:
             arguments = json.loads(tool_call.arguments)
-            result = chat_core.ejecutar_tool(
-                tool_name=tool_call.name,
-                arguments=arguments,
-                catalog=CATALOG,
-                trace=trace,
+            if not isinstance(arguments, dict):
+                raise TypeError("Los argumentos de herramienta deben ser un objeto.")
+            cache_key = (
+                tool_call.name,
+                json.dumps(arguments, ensure_ascii=False, sort_keys=True),
             )
+            result = result_cache.get(cache_key)
+            if result is None:
+                result = chat_core.ejecutar_tool(
+                    tool_call.name,
+                    arguments,
+                    CATALOG,
+                    trace,
+                    query=question,
+                    projects=PROJECTS,
+                )
+                result_cache[cache_key] = result
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             result = json.dumps(
-                {"ok": False, "error": f"Argumentos inválidos: {exc}"},
+                {"ok": False, "error": "No se pudo consultar la fuente solicitada."},
                 ensure_ascii=False,
             )
-
+            LOGGER.warning(
+                "tool_failed name=%s type=%s",
+                getattr(tool_call, "name", "unknown"),
+                type(exc).__name__,
+            )
         input_items.append(
             {
                 "type": "function_call_output",
@@ -419,50 +757,168 @@ def stream_chat_response(
                 "output": result,
             }
         )
+    return trace
 
-    completed_response = None
-    streamed_text: list[str] = []
 
+def _stream_response_attempt(
+    input_items: list[Any],
+    instructions: str,
+    max_output_tokens: int,
+    state: StreamingAttemptState,
+    sanitizer: PublicStreamingSanitizer,
+) -> Iterator[str]:
+    """Transmite un intento mientras conserva un margen para sanear límites."""
     with CLIENT.responses.create(
         model=MODEL,
         instructions=instructions,
         input=input_items,
         stream=True,
+        max_output_tokens=max_output_tokens,
+        **openai_reasoning_options(),
     ) as stream:
         for event in stream:
             event_type = getattr(event, "type", "")
             if event_type == "response.output_text.delta":
                 delta = getattr(event, "delta", "")
-                if delta:
-                    streamed_text.append(delta)
-                    yield delta
-            elif event_type == "response.completed":
-                completed_response = event.response
-            elif event_type == "response.failed":
-                error = getattr(event, "error", None)
-                raise RuntimeError(f"Respuesta fallida: {error}")
+                if isinstance(delta, str) and delta:
+                    state.raw_parts.append(delta)
+                    public_delta = sanitizer.push(delta)
+                    if public_delta:
+                        state.emitted_chars += len(public_delta)
+                        yield public_delta
+            elif event_type in {
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            }:
+                state.terminal_response = event.response
+                state.terminal_type = event_type
+            elif event_type == "error":
+                raise GenerationError(
+                    getattr(event, "code", None) or "provider_stream_error",
+                    getattr(event, "message", "Error durante la respuesta en streaming."),
+                )
 
-    if completed_response is None:
-        raise RuntimeError("No se recibió el evento response.completed.")
+    if state.terminal_response is None:
+        raise GenerationError(
+            "missing_terminal_event",
+            "El proveedor cerró la respuesta sin un estado terminal.",
+        )
+    validate_completed_response(state.terminal_response, "generation")
+    if state.terminal_type != "response.completed":
+        raise GenerationError(
+            f"unexpected_{state.terminal_type}",
+            "La respuesta no terminó con el evento esperado.",
+            response_id=response_identifier(state.terminal_response),
+        )
 
-    if not streamed_text and completed_response.output_text:
-        yield completed_response.output_text
+
+def _generate_streaming_response(
+    input_items: list[Any],
+    instructions: str,
+    detail_level: str,
+) -> Iterator[str]:
+    """Transmite deltas y continúa automáticamente una salida truncada."""
+    base_limit = output_token_limit(detail_level)
+    last_error: Exception | None = None
+    attempts = max(1, MAX_GENERATION_ATTEMPTS)
+    accumulated_raw = ""
+    sanitizer = PublicStreamingSanitizer()
+    total_emitted_chars = 0
+    for attempt in range(attempts):
+        attempt_input = list(input_items)
+        retry_instructions = instructions
+        if attempt:
+            retry_instructions += (
+                "\n\n## Streaming continuation\n"
+                "Continue exactly where the previous output stopped. Return only "
+                "the missing continuation: do not repeat its beginning, preface it "
+                "or mention that a retry occurred. Complete the answer coherently."
+            )
+            if accumulated_raw:
+                attempt_input.extend(
+                    [
+                        {"role": "assistant", "content": accumulated_raw},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Continúa exactamente desde el último carácter de la "
+                                "respuesta anterior. Devuelve únicamente el texto que falta."
+                            ),
+                        },
+                    ]
+                )
+        state = StreamingAttemptState()
+        try:
+            for public_delta in _stream_response_attempt(
+                attempt_input,
+                retry_instructions,
+                base_limit * (2**attempt),
+                state,
+                sanitizer,
+            ):
+                total_emitted_chars += len(public_delta)
+                yield public_delta
+            remainder = sanitizer.flush()
+            if remainder:
+                total_emitted_chars += len(remainder)
+                yield remainder
+            if not total_emitted_chars:
+                raise GenerationError(
+                    "empty_response",
+                    "El proveedor devolvió una respuesta vacía.",
+                    response_id=response_identifier(state.terminal_response),
+                )
+            return
+        except AuthenticationError:
+            raise
+        except (APIConnectionError, APIStatusError, RateLimitError, GenerationError) as exc:
+            accumulated_raw += state.raw_text
+            last_error = exc
+            if attempt + 1 >= attempts:
+                raise
+            LOGGER.warning(
+                "generation_retry attempt=%s type=%s code=%s",
+                attempt + 1,
+                type(exc).__name__,
+                getattr(exc, "code", "unclassified"),
+            )
+    raise last_error or GenerationError("generation_unknown", "No se pudo generar la respuesta.")
 
 
-def main() -> None:
-    WEB_ROOT.mkdir(exist_ok=True)
-    server = ChatHTTPServer((HOST, PORT), ChatRequestHandler)
-    print(f"Chat web disponible en http://{HOST}:{PORT}")
+def stream_chat_response(
+    question: str,
+    detail_level: str,
+    history: list[dict[str, str]] | None = None,
+) -> Iterator[str]:
+    """Recupera evidencia y transmite la respuesta de forma incremental."""
     if CLIENT is None:
-        print("Aviso: falta OPENAI_API_KEY; la interfaz se servirá sin respuestas.")
-    print("Pulsa Ctrl+C para detener el servidor.")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nServidor detenido.")
-    finally:
-        server.server_close()
+        raise RuntimeError("El cliente de OpenAI no está configurado.")
+
+    instructions = chat_core.construir_instrucciones(detail_level)
+    input_items: list[Any] = [*(history or []), {"role": "user", "content": question}]
+    planning_response = _plan_tool_calls(input_items, instructions)
+    input_items.extend(planning_response.output)
+    trace = _append_tool_results(input_items, planning_response, question)
+    answer_chars = 0
+    for public_delta in _generate_streaming_response(
+        input_items,
+        instructions,
+        detail_level,
+    ):
+        answer_chars += len(public_delta)
+        yield public_delta
+
+    LOGGER.info(
+        "chat_generation_completed documents=%s answer_chars=%s",
+        len(trace.accesses),
+        answer_chars,
+    )
 
 
-if __name__ == "__main__":
-    main()
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(WEB_ROOT / "index.html")
+
+
+app.mount("/", StaticFiles(directory=WEB_ROOT, html=False), name="web")

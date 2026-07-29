@@ -1,0 +1,12 @@
+.env
+.git
+.gitignore
+Entorno
+__pycache__
+*.py[cod]
+*.log
+.pytest_cache
+.coverage
+htmlcov
+.codex
+.agents

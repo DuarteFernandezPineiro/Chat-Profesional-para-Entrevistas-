@@ -10,7 +10,7 @@
       name="description"
       content="Conversa con el asistente profesional de Duarte Fernández Piñeiro sobre su formación, experiencia, proyectos y objetivos."
     />
-    <link rel="stylesheet" href="/styles.css?v=10" />
+    <link rel="stylesheet" href="/styles.css?v=12" />
   </head>
   <body>
     <a class="skip-link" href="#message-input">Ir a la conversación</a>
@@ -63,6 +63,34 @@
             <span class="contact-link-label">
               <span class="contact-icon linkedin-icon" aria-hidden="true">in</span>
               <span>LinkedIn</span>
+            </span>
+            <svg class="contact-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M6 14 14 6M8 6h6v6"></path>
+            </svg>
+          </a>
+          <a
+            class="contact-item"
+            href="https://github.com/DuarteFernandezPineiro"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span class="contact-link-label">
+              <span class="contact-icon" aria-hidden="true">GH</span>
+              <span>GitHub</span>
+            </span>
+            <svg class="contact-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M6 14 14 6M8 6h6v6"></path>
+            </svg>
+          </a>
+          <a
+            class="contact-item"
+            href="https://bitcoin-decision-chat-674899194994.europe-southwest1.run.app"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span class="contact-link-label">
+              <span class="contact-icon" aria-hidden="true">₿</span>
+              <span>Proyecto Bitcoin</span>
             </span>
             <svg class="contact-arrow" viewBox="0 0 20 20" aria-hidden="true">
               <path d="M6 14 14 6M8 6h6v6"></path>
@@ -212,6 +240,16 @@
       </section>
     </main>
 
-    <script src="/app.js?v=13" defer></script>
+    <section id="analytics-consent" class="analytics-consent" aria-label="Preferencias de analítica" hidden>
+      <p>
+        Usamos analítica anónima para mejorar la web. No recopilamos el texto de las preguntas ni de las respuestas.
+      </p>
+      <div class="analytics-consent-actions">
+        <button type="button" data-analytics-choice="accept">Aceptar</button>
+        <button type="button" data-analytics-choice="reject">Rechazar</button>
+      </div>
+    </section>
+
+    <script src="/app.js?v=18" defer></script>
   </body>
 </html>
